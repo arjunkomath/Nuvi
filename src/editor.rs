@@ -64,6 +64,7 @@ pub struct Editor {
 pub enum EditorEvent {
     CloseCancelled,
     Closed,
+    Title(SharedString),
 }
 
 // The font and size are deliberately not part of the key: whenever they change,
@@ -451,7 +452,7 @@ impl Editor {
                 while let Ok(event) = receiver.recv().await {
                     match event {
                         NvimEvent::Redraw(args) => {
-                            let _ = editor.update_in(cx, move |editor, _, cx| {
+                            let update = editor.update_in(cx, move |editor, _, cx| {
                                 // Earlier batches were already scanned, so only the new
                                 // events can carry the flush.
                                 let flushed = redraw_has_flush(&args);
@@ -477,6 +478,7 @@ impl Editor {
                                             editor.ui.mode_index,
                                             editor.ui.busy,
                                         );
+                                let title_changed = redraw.title_changed;
                                 editor.apply_animations(redraw, Instant::now());
                                 if editor.shape_cache.len() > 16_384 {
                                     editor.shape_cache.clear();
@@ -484,20 +486,32 @@ impl Editor {
                                 if restart_blink {
                                     editor.restart_blink(cx);
                                 }
+                                if title_changed {
+                                    cx.emit(EditorEvent::Title(editor.ui.title.clone().into()));
+                                }
                                 editor.status = None;
                                 cx.notify();
                             });
+                            if update.is_err() {
+                                break;
+                            }
                         }
                         NvimEvent::Error(error) => {
-                            let _ = editor.update_in(cx, |editor, _, cx| {
+                            let update = editor.update_in(cx, |editor, _, cx| {
                                 editor.status = Some(error.into());
                                 cx.notify();
                             });
+                            if update.is_err() {
+                                break;
+                            }
                         }
                         NvimEvent::CloseCancelled => {
-                            let _ = editor.update_in(cx, |_, _, cx| {
+                            let update = editor.update_in(cx, |_, _, cx| {
                                 cx.emit(EditorEvent::CloseCancelled);
                             });
+                            if update.is_err() {
+                                break;
+                            }
                         }
                         NvimEvent::Closed => {
                             let _ = editor.update_in(cx, |editor, _, cx| {
@@ -681,6 +695,10 @@ impl Editor {
         if self.scroll_animation.as_ref().is_some_and(|animation| {
             animation.contains(self.ui.grid.cursor_row, self.ui.grid.cursor_col)
         }) {
+            // cursor_center() already includes the live scroll offset, so shifting
+            // the cursor animation by this frame's scroll delta makes the retarget
+            // below a no-op. Removing either side of that cancellation makes the
+            // cursor track the scroll twice.
             self.cursor_animation
                 .shift(scroll_after - scroll_before, 0.0);
         }
@@ -1215,7 +1233,18 @@ impl CursorAnimation {
         self.animating = false;
     }
 
+    /// Cursor-motion smear: corners whose outward direction aligns with the
+    /// travel direction keep the full animation length (they trail), while
+    /// corners facing the destination snap almost immediately (they lead), so
+    /// the block stretches toward the target and catches up from behind.
     fn retarget(&mut self, center: (f32, f32), shape: CursorShape, cell_percentage: u8) {
+        // Movements below this threshold count as staying on the same row/column.
+        const EPSILON: f32 = 0.001;
+        // Same-row hops of up to two columns are ordinary typing (one column, or
+        // two after a wide character); they use the short uniform animation
+        // instead of the smear.
+        const TYPING_COLUMNS: f32 = 2.0 + EPSILON;
+
         if !self.initialized {
             self.snap(center, shape, cell_percentage);
             return;
@@ -1224,8 +1253,8 @@ impl CursorAnimation {
         let relative = cursor_corners(shape, cell_percentage);
         let destinations = relative.map(|relative| (center.0 + relative.0, center.1 + relative.1));
         let movement = (center.0 - self.center.0, center.1 - self.center.1);
-        let moved = movement.0.abs() > 0.001 || movement.1.abs() > 0.001;
-        let short_horizontal = movement.0.abs() <= 0.001 && movement.1.abs() <= 2.001;
+        let moved = movement.0.abs() > EPSILON || movement.1.abs() > EPSILON;
+        let short_horizontal = movement.0.abs() <= EPSILON && movement.1.abs() <= TYPING_COLUMNS;
 
         let lengths = if moved && !short_horizontal {
             let mut alignments = [0.0; 4];
