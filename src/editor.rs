@@ -34,7 +34,7 @@ const CURSOR_CORNERS: [(f32, f32); 4] = [(-0.5, -0.5), (-0.5, 0.5), (0.5, 0.5), 
 pub struct Editor {
     ui: Ui,
     session: Option<NvimSession>,
-    status: Option<SharedString>,
+    status: Option<Status>,
     focus: FocusHandle,
     bounds: Option<Bounds<Pixels>>,
     cell_size: Size<Pixels>,
@@ -65,6 +65,14 @@ pub enum EditorEvent {
     CloseCancelled,
     Closed,
     Title(SharedString),
+}
+
+/// Overlay shown in the corner of the editor. Startup progress clears itself
+/// on the first redraw; errors stay until the user dismisses them.
+#[derive(Clone)]
+enum Status {
+    Starting,
+    Error(SharedString),
 }
 
 // The font and size are deliberately not part of the key: whenever they change,
@@ -381,13 +389,13 @@ impl Editor {
                 Ok(session) => {
                     let _ = editor.update(cx, |editor, cx| {
                         editor.session = Some(session);
-                        editor.status = None;
+                        editor.clear_starting_status();
                         cx.notify();
                     });
                 }
                 Err(error) => {
                     let _ = editor.update(cx, |editor, cx| {
-                        editor.status = Some(error.into());
+                        editor.status = Some(Status::Error(error.into()));
                         cx.notify();
                     });
                 }
@@ -400,7 +408,7 @@ impl Editor {
         Self {
             ui: Ui::default(),
             session: None,
-            status: Some("Starting Neovim…".into()),
+            status: Some(Status::Starting),
             focus: cx.focus_handle(),
             bounds: None,
             cell_size: size(px(8.0), px(20.0)),
@@ -489,7 +497,7 @@ impl Editor {
                                 if title_changed {
                                     cx.emit(EditorEvent::Title(editor.ui.title.clone().into()));
                                 }
-                                editor.status = None;
+                                editor.clear_starting_status();
                                 cx.notify();
                             });
                             if update.is_err() {
@@ -498,7 +506,7 @@ impl Editor {
                         }
                         NvimEvent::Error(error) => {
                             let update = editor.update_in(cx, |editor, _, cx| {
-                                editor.status = Some(error.into());
+                                editor.status = Some(Status::Error(error.into()));
                                 cx.notify();
                             });
                             if update.is_err() {
@@ -713,6 +721,12 @@ impl Editor {
 
         if !self.animating() {
             self.animation_frame = None;
+        }
+    }
+
+    fn clear_starting_status(&mut self) {
+        if matches!(self.status, Some(Status::Starting)) {
+            self.status = None;
         }
     }
 
@@ -1484,6 +1498,10 @@ impl Render for Editor {
                 .size_full(),
             )
             .when_some(status, |view, status| {
+                let (message, dismissible) = match status {
+                    Status::Starting => ("Starting Neovim…".into(), false),
+                    Status::Error(message) => (message, true),
+                };
                 view.child(
                     div()
                         .absolute()
@@ -1495,7 +1513,31 @@ impl Render for Editor {
                         .rounded_md()
                         .bg(color(0x2e3440).opacity(0.94))
                         .text_color(rgb(0xeceff4))
-                        .child(status),
+                        .flex()
+                        .items_start()
+                        .gap(px(8.0))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(div().min_w(px(0.0)).flex_1().child(message))
+                        .when(dismissible, |toast| {
+                            toast.child(
+                                div()
+                                    .id("dismiss-status")
+                                    .flex_none()
+                                    .size(px(20.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(5.0))
+                                    .text_size(px(14.0))
+                                    .cursor_pointer()
+                                    .hover(|this| this.bg(color(0xffffff).opacity(0.12)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.status = None;
+                                        cx.notify();
+                                    }))
+                                    .child("×"),
+                            )
+                        }),
                 )
             })
     }
