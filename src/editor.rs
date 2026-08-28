@@ -52,6 +52,7 @@ pub struct Editor {
     marked_selection: Range<usize>,
     scroll_remainder: Point<Pixels>,
     cursor_visible: bool,
+    blink_epoch: usize,
     cursor_animation: CursorAnimation,
     scroll_animation: Option<ScrollAnimation>,
     animation_frame: Option<Instant>,
@@ -372,7 +373,6 @@ impl Editor {
         .detach();
 
         Self::listen(window, receiver, cx);
-        Self::blink_cursor(cx);
 
         Self {
             ui: Ui::default(),
@@ -395,6 +395,7 @@ impl Editor {
             marked_selection: 0..0,
             scroll_remainder: point(px(0.0), px(0.0)),
             cursor_visible: true,
+            blink_epoch: 0,
             cursor_animation: CursorAnimation::default(),
             scroll_animation: None,
             animation_frame: None,
@@ -437,14 +438,30 @@ impl Editor {
                                     return;
                                 }
 
+                                let before = (
+                                    editor.ui.grid.cursor_row,
+                                    editor.ui.grid.cursor_col,
+                                    editor.ui.mode_index,
+                                    editor.ui.busy,
+                                );
                                 let redraw = editor
                                     .ui
                                     .apply_redraw(&std::mem::take(&mut editor.pending_redraw));
+                                let restart_blink = redraw.invalidated
+                                    || before
+                                        != (
+                                            editor.ui.grid.cursor_row,
+                                            editor.ui.grid.cursor_col,
+                                            editor.ui.mode_index,
+                                            editor.ui.busy,
+                                        );
                                 editor.apply_animations(redraw, Instant::now());
                                 if editor.shape_cache.len() > 16_384 {
                                     editor.shape_cache.clear();
                                 }
-                                editor.cursor_visible = true;
+                                if restart_blink {
+                                    editor.restart_blink(cx);
+                                }
                                 editor.status = None;
                                 cx.notify();
                             });
@@ -474,46 +491,52 @@ impl Editor {
         .detach();
     }
 
-    fn blink_cursor(cx: &Context<Self>) {
-        cx.spawn(async |editor: WeakEntity<Editor>, cx: &mut AsyncApp| {
-            loop {
-                let delay = editor
-                    .read_with(cx, |editor, _| {
-                        let mode = editor.ui.cursor_mode();
-                        let millis = if editor.cursor_visible {
-                            mode.blink_on
-                        } else {
-                            mode.blink_off
-                        };
-                        Duration::from_millis(millis.max(100))
-                    })
-                    .unwrap_or(Duration::from_millis(500));
-                Timer::after(delay).await;
-                if editor
-                    .update(cx, |editor, cx| {
-                        let mode = editor.ui.cursor_mode();
-                        let blinking = mode.blink_on > 0
-                            && mode.blink_off > 0
-                            && !editor.ui.busy
-                            && !editor.cursor_animation.animating
-                            && editor.scroll_animation.is_none();
-                        let visible = if blinking {
-                            !editor.cursor_visible
-                        } else {
-                            true
-                        };
-                        if visible != editor.cursor_visible {
-                            editor.cursor_visible = visible;
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
+    /// Shows the cursor and, when the current mode blinks, schedules the next
+    /// toggle. Bumping the epoch cancels any tick already in flight, so the
+    /// blink chain parks itself whenever blinking is disabled and costs nothing
+    /// until the next call re-arms it.
+    fn restart_blink(&mut self, cx: &mut Context<Self>) {
+        self.blink_epoch += 1;
+        self.cursor_visible = true;
+        let mode = self.ui.cursor_mode();
+        let (wait, on) = (mode.blink_wait, mode.blink_on);
+        if self.blinking() {
+            // Neovim's blinkwait is the delay before blinking starts after activity.
+            self.schedule_blink(if wait > 0 { wait } else { on }, cx);
+        }
+    }
+
+    fn blinking(&self) -> bool {
+        let mode = self.ui.cursor_mode();
+        mode.blink_on > 0 && mode.blink_off > 0 && !self.ui.busy && !self.animating()
+    }
+
+    fn schedule_blink(&self, delay: u64, cx: &mut Context<Self>) {
+        let epoch = self.blink_epoch;
+        cx.spawn(async move |editor: WeakEntity<Editor>, cx: &mut AsyncApp| {
+            Timer::after(Duration::from_millis(delay.max(20))).await;
+            let _ = editor.update(cx, |editor, cx| editor.blink_tick(epoch, cx));
         })
         .detach();
+    }
+
+    fn blink_tick(&mut self, epoch: usize, cx: &mut Context<Self>) {
+        if epoch != self.blink_epoch {
+            return;
+        }
+        if !self.blinking() {
+            self.cursor_visible = true;
+            return;
+        }
+        self.cursor_visible = !self.cursor_visible;
+        let mode = self.ui.cursor_mode();
+        let delay = if self.cursor_visible {
+            mode.blink_on
+        } else {
+            mode.blink_off
+        };
+        self.schedule_blink(delay, cx);
+        cx.notify();
     }
 
     fn apply_animations(&mut self, redraw: RedrawResult, now: Instant) {
@@ -680,13 +703,13 @@ impl Editor {
         self.session.as_ref().map(|session| &session.client)
     }
 
-    fn send_text(&mut self, text: &str) {
+    fn send_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if !text.is_empty()
             && let Some(client) = self.client()
         {
             client.input(text.replace('<', "<LT>"));
         }
-        self.cursor_visible = true;
+        self.restart_blink(cx);
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -694,7 +717,7 @@ impl Editor {
             if let Some(client) = self.client() {
                 client.input(keys);
             }
-            self.cursor_visible = true;
+            self.restart_blink(cx);
             cx.stop_propagation();
             cx.notify();
         }
@@ -807,7 +830,7 @@ impl Editor {
         &mut self,
         bounds: Bounds<Pixels>,
         window: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> PaintState {
         let now = Instant::now();
         if self.bounds.is_some_and(|previous| previous != bounds) {
@@ -863,7 +886,12 @@ impl Editor {
             }
         }
 
+        let was_animating = self.animating();
         self.advance_animations(now);
+        if was_animating && !self.animating() {
+            // Blinking pauses during animations; re-arm it once they settle.
+            self.restart_blink(cx);
+        }
 
         let mut paint = PaintState::default();
         paint.main.backgrounds.push(
@@ -1107,11 +1135,11 @@ impl Editor {
         }
     }
 
-    fn commit_marked_text(&mut self) {
+    fn commit_marked_text(&mut self, cx: &mut Context<Self>) {
         if !self.marked_text.is_empty() {
             let text = std::mem::take(&mut self.marked_text);
             self.marked_selection = 0..0;
-            self.send_text(&text);
+            self.send_text(&text, cx);
         }
     }
 }
@@ -1470,7 +1498,7 @@ impl InputHandler for NvimInputHandler {
         self.editor.update(cx, |editor, cx| {
             editor.marked_text.clear();
             editor.marked_selection = 0..0;
-            editor.send_text(text);
+            editor.send_text(text, cx);
             cx.notify();
         });
     }
@@ -1495,7 +1523,7 @@ impl InputHandler for NvimInputHandler {
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut App) {
         self.editor.update(cx, |editor, cx| {
-            editor.commit_marked_text();
+            editor.commit_marked_text(cx);
             cx.notify();
         });
     }
