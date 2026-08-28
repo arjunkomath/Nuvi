@@ -10,6 +10,10 @@
     <string>Nuvi</string>
     <key>CFBundleIdentifier</key>
     <string>dev.nuvi.Nuvi</string>
+    <key>CFBundleIconFile</key>
+    <string>Nuvi</string>
+    <key>CFBundleIconName</key>
+    <string>Nuvi</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

@@ -4,15 +4,15 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, Context, Entity, FontWeight, Hsla, MouseButton, PathPromptOptions,
-    PromptButton, PromptLevel, Render, SharedString, Subscription, Window, WindowAppearance, div,
-    prelude::*, px, rgb,
+    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton,
+    PathPromptOptions, PromptButton, PromptLevel, Render, SharedString, Subscription, Window,
+    WindowAppearance, div, prelude::*, px, rgb,
 };
 
 use crate::{
-    CloseWorkspace, NewWorkspace, OpenFolder, Quit, SelectWorkspace1, SelectWorkspace2,
-    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
-    SelectWorkspace8, SelectWorkspace9,
+    CloseWorkspace, NewWorkspace, OpenFolder, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3,
+    SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8,
+    SelectWorkspace9,
     editor::{Editor, EditorEvent},
 };
 
@@ -74,6 +74,7 @@ struct WorkspaceTab {
 }
 
 pub struct WorkspaceWindow {
+    focus: FocusHandle,
     tabs: Vec<WorkspaceTab>,
     active: usize,
     next_id: usize,
@@ -88,6 +89,7 @@ pub struct WorkspaceWindow {
 impl WorkspaceWindow {
     pub fn new(window: &mut Window, args: Vec<OsString>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            focus: cx.focus_handle(),
             tabs: Vec::new(),
             active: 0,
             next_id: 0,
@@ -101,6 +103,7 @@ impl WorkspaceWindow {
 
         if args.is_empty() {
             this.push_launcher();
+            this.focus.focus(window);
         } else {
             let path = args
                 .iter()
@@ -132,6 +135,7 @@ impl WorkspaceWindow {
         self.deactivate_current(cx);
         self.push_launcher();
         self.active = self.tabs.len() - 1;
+        self.focus.focus(window);
         window.set_window_title("Nuvi");
         cx.notify();
     }
@@ -337,8 +341,11 @@ impl WorkspaceWindow {
         self.active = index;
         let tab = &self.tabs[index];
         window.set_window_title(&tab.title);
-        if let TabContent::Editor(editor) = &tab.content {
-            editor.update(cx, |editor, _| editor.activate(window));
+        match &tab.content {
+            TabContent::Launcher => self.focus.focus(window),
+            TabContent::Editor(editor) => {
+                editor.update(cx, |editor, _| editor.activate(window));
+            }
         }
         cx.notify();
     }
@@ -565,6 +572,7 @@ impl WorkspaceWindow {
 
         div()
             .size_full()
+            .track_focus(&self.focus)
             .flex()
             .justify_center()
             .text_color(rgb(theme.text))
@@ -639,12 +647,6 @@ impl Render for WorkspaceWindow {
             .flex()
             .flex_col()
             .bg(translucent(theme.chrome, theme.chrome_opacity))
-            .on_action(cx.listener(|this, _: &Quit, window, cx| {
-                cx.stop_propagation();
-                if this.request_window_close(window, cx) {
-                    window.remove_window();
-                }
-            }))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 cx.stop_propagation();
                 this.new_workspace(window, cx);
