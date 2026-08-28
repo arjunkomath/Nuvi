@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
+use compact_str::CompactString;
 use nvim_rs::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
-    pub text: String,
+    // Inline storage: almost every cell is one grapheme, and cells are written,
+    // cloned, and defaulted in bulk on every resize and scroll.
+    pub text: CompactString,
     pub highlight: u64,
 }
 
@@ -29,7 +32,7 @@ pub struct RedrawResult {
 impl Default for Cell {
     fn default() -> Self {
         Self {
-            text: " ".into(),
+            text: CompactString::const_new(" "),
             highlight: 0,
         }
     }
@@ -564,7 +567,8 @@ mod tests {
             grid.resize(4, 3);
             for row in 0..grid.height {
                 for col in 0..grid.width {
-                    grid.cells[row * grid.width + col].text = format!("{row}{col}");
+                    grid.cells[row * grid.width + col].text =
+                        compact_str::format_compact!("{row}{col}");
                 }
             }
             grid

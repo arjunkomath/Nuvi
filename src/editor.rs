@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     ffi::OsString,
     ops::Range,
     time::{Duration, Instant},
@@ -65,6 +65,8 @@ pub enum EditorEvent {
     Closed,
 }
 
+// The font and size are deliberately not part of the key: whenever they change,
+// `prepare` clears the whole cache.
 #[derive(Clone, Hash, PartialEq, Eq)]
 struct TextKey {
     text: String,
@@ -76,8 +78,6 @@ struct TextKey {
     undercurl: bool,
     strikethrough: bool,
     dim: bool,
-    font_families: Vec<String>,
-    font_size: u32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -286,7 +286,7 @@ impl GridPainter<'_> {
                 continue;
             }
             let key = TextKey {
-                text: text.clone(),
+                text,
                 foreground: highlight.foreground,
                 special: highlight.special,
                 bold: highlight.bold,
@@ -295,42 +295,44 @@ impl GridPainter<'_> {
                 undercurl: highlight.undercurl,
                 strikethrough: highlight.strikethrough,
                 dim: highlight.dim,
-                font_families: self.font_families.to_vec(),
-                font_size: f32::from(self.font_size).to_bits(),
             };
-            let line = self.shape_cache.entry(key).or_insert_with(|| {
-                let weight = if highlight.bold {
-                    FontWeight(self.font_weight.max(FontWeight::BOLD.0))
-                } else {
-                    FontWeight(self.font_weight)
-                };
-                let font = grid_font(
-                    self.font_families,
-                    weight,
-                    self.font_italic || highlight.italic,
-                );
-                let mut foreground = color(highlight.foreground);
-                if highlight.dim {
-                    foreground = foreground.opacity(0.5);
+            let line = match self.shape_cache.entry(key) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let weight = if highlight.bold {
+                        FontWeight(self.font_weight.max(FontWeight::BOLD.0))
+                    } else {
+                        FontWeight(self.font_weight)
+                    };
+                    let font = grid_font(
+                        self.font_families,
+                        weight,
+                        self.font_italic || highlight.italic,
+                    );
+                    let mut foreground = color(highlight.foreground);
+                    if highlight.dim {
+                        foreground = foreground.opacity(0.5);
+                    }
+                    let line = shape(
+                        self.window,
+                        &entry.key().text,
+                        self.font_size,
+                        &font,
+                        foreground,
+                        (highlight.underline || highlight.undercurl).then_some(UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(color(highlight.special)),
+                            wavy: highlight.undercurl,
+                        }),
+                        highlight.strikethrough.then_some(StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: Some(foreground),
+                        }),
+                        self.forced_width,
+                    );
+                    entry.insert(line)
                 }
-                shape(
-                    self.window,
-                    &text,
-                    self.font_size,
-                    &font,
-                    foreground,
-                    (highlight.underline || highlight.undercurl).then_some(UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(color(highlight.special)),
-                        wavy: highlight.undercurl,
-                    }),
-                    highlight.strikethrough.then_some(StrikethroughStyle {
-                        thickness: px(1.0),
-                        color: Some(foreground),
-                    }),
-                    self.forced_width,
-                )
-            });
+            };
             layer.glyphs.push((
                 point(
                     self.bounds.left() + self.cell_width * (start_col + run_start) as f32,
@@ -427,18 +429,17 @@ impl Editor {
                     match event {
                         NvimEvent::Redraw(args) => {
                             let _ = editor.update_in(cx, move |editor, _, cx| {
+                                // Earlier batches were already scanned, so only the new
+                                // events can carry the flush.
+                                let flushed = redraw_has_flush(&args);
                                 editor.pending_redraw.extend(args);
-                                if !redraw_has_flush(&editor.pending_redraw) {
+                                if !flushed {
                                     return;
                                 }
 
                                 let redraw = editor
                                     .ui
                                     .apply_redraw(&std::mem::take(&mut editor.pending_redraw));
-                                if !redraw.flushed {
-                                    return;
-                                }
-
                                 editor.apply_animations(redraw, Instant::now());
                                 if editor.shape_cache.len() > 16_384 {
                                     editor.shape_cache.clear();
@@ -825,13 +826,12 @@ impl Editor {
             self.font_spec = Some(self.ui.guifont.clone());
             self.shape_cache.clear();
         }
-        let font_families = self.font_families.clone();
         let font_size = self.font_size;
         let font_weight = self.font_weight;
         let font_italic = self.font_italic;
         let font_size = px(font_size);
         if font_changed || self.metrics_linespace != self.ui.linespace {
-            let base_font = grid_font(&font_families, FontWeight(font_weight), font_italic);
+            let base_font = grid_font(&self.font_families, FontWeight(font_weight), font_italic);
             let font_id = window.text_system().resolve_font(&base_font);
             let cell_width = (window
                 .text_system()
@@ -906,7 +906,7 @@ impl Editor {
                 bounds,
                 cell_width,
                 line_height,
-                font_families: &font_families,
+                font_families: &self.font_families,
                 font_size,
                 font_weight,
                 font_italic,
@@ -1013,7 +1013,7 @@ impl Editor {
         }
 
         if !self.marked_text.is_empty() {
-            let font = grid_font(&font_families, FontWeight(font_weight), font_italic);
+            let font = grid_font(&self.font_families, FontWeight(font_weight), font_italic);
             let line = shape(
                 window,
                 &self.marked_text,
