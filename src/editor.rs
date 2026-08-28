@@ -268,15 +268,37 @@ impl GridPainter<'_> {
                 continue;
             }
 
+            // A double-width cell is followed by an empty continuation cell. Shape
+            // wide cells alone at their own column so a glyph advance that differs
+            // from two cell widths cannot push the rest of the run out of grid
+            // alignment (forced_width would even collapse it to one column).
+            let is_wide = |index: usize| {
+                cells
+                    .get(index + 1)
+                    .is_some_and(|cell| cell.text.is_empty())
+            };
+            if cells[col].text.is_empty() {
+                // Continuation cell; its column is covered by the wide glyph.
+                col += 1;
+                continue;
+            }
+
             let run_start = col;
             let highlight = highlights[col];
             let mut text = String::new();
-            while col < cells.len()
-                && highlights[col] == highlight
-                && powerline_separator(&cells[col].text).is_none()
-            {
+            if is_wide(col) {
                 text.push_str(&cells[col].text);
-                col += 1;
+                col += 2;
+            } else {
+                while col < cells.len()
+                    && highlights[col] == highlight
+                    && powerline_separator(&cells[col].text).is_none()
+                    && !cells[col].text.is_empty()
+                    && !is_wide(col)
+                {
+                    text.push_str(&cells[col].text);
+                    col += 1;
+                }
             }
             if text.is_empty()
                 || (!highlight.underline
