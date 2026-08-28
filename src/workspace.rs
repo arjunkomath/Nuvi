@@ -4,9 +4,9 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, Context, Entity, FontWeight, Hsla, MouseButton, PathPromptOptions,
-    PromptButton, PromptLevel, Render, SharedString, Subscription, Window, WindowAppearance, div,
-    prelude::*, px, rgb,
+    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton,
+    PathPromptOptions, PromptButton, PromptLevel, Render, SharedString, Subscription, Window,
+    WindowAppearance, div, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -74,6 +74,7 @@ struct WorkspaceTab {
 }
 
 pub struct WorkspaceWindow {
+    focus: FocusHandle,
     tabs: Vec<WorkspaceTab>,
     active: usize,
     next_id: usize,
@@ -88,6 +89,7 @@ pub struct WorkspaceWindow {
 impl WorkspaceWindow {
     pub fn new(window: &mut Window, args: Vec<OsString>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            focus: cx.focus_handle(),
             tabs: Vec::new(),
             active: 0,
             next_id: 0,
@@ -101,6 +103,7 @@ impl WorkspaceWindow {
 
         if args.is_empty() {
             this.push_launcher();
+            this.focus.focus(window);
         } else {
             let path = args
                 .iter()
@@ -129,9 +132,10 @@ impl WorkspaceWindow {
 
     pub fn new_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.closing_window = false;
-        self.deactivate_current(window, cx);
+        self.deactivate_current(cx);
         self.push_launcher();
         self.active = self.tabs.len() - 1;
+        self.focus.focus(window);
         window.set_window_title("Nuvi");
         cx.notify();
     }
@@ -227,7 +231,7 @@ impl WorkspaceWindow {
             return;
         }
 
-        self.deactivate_current(window, cx);
+        self.deactivate_current(cx);
         let replace = self
             .tabs
             .get(self.active)
@@ -333,12 +337,15 @@ impl WorkspaceWindow {
         if index >= self.tabs.len() {
             return;
         }
-        self.deactivate_current(window, cx);
+        self.deactivate_current(cx);
         self.active = index;
         let tab = &self.tabs[index];
         window.set_window_title(&tab.title);
-        if let TabContent::Editor(editor) = &tab.content {
-            editor.update(cx, |editor, _| editor.activate(window));
+        match &tab.content {
+            TabContent::Launcher => self.focus.focus(window),
+            TabContent::Editor(editor) => {
+                editor.update(cx, |editor, _| editor.activate(window));
+            }
         }
         cx.notify();
     }
@@ -348,14 +355,13 @@ impl WorkspaceWindow {
         self.activate(index, window, cx);
     }
 
-    fn deactivate_current(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn deactivate_current(&self, cx: &mut Context<Self>) {
         if let Some(WorkspaceTab {
             content: TabContent::Editor(editor),
             ..
         }) = self.tabs.get(self.active)
         {
             editor.update(cx, |editor, _| editor.deactivate());
-            window.blur();
         }
     }
 
@@ -566,6 +572,7 @@ impl WorkspaceWindow {
 
         div()
             .size_full()
+            .track_focus(&self.focus)
             .flex()
             .justify_center()
             .text_color(rgb(theme.text))
