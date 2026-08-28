@@ -75,24 +75,34 @@ fn main() {
         .detach();
 
         let bounds = Bounds::centered(None, size(px(1100.0), px(720.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: None,
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(18.0), px(16.0))),
-                }),
-                window_background: WindowBackgroundAppearance::Blurred,
-                ..Default::default()
-            },
-            move |window, cx| {
-                let workspace = cx.new(|cx| WorkspaceWindow::new(window, args, cx));
-                WorkspaceWindow::bind_window(&workspace, window, cx);
-                workspace
-            },
-        )
-        .unwrap();
+        let workspace_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: None,
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(18.0), px(16.0))),
+                    }),
+                    window_background: WindowBackgroundAppearance::Blurred,
+                    ..Default::default()
+                },
+                move |window, cx| {
+                    let workspace = cx.new(|cx| WorkspaceWindow::new(window, args, cx));
+                    WorkspaceWindow::bind_window(&workspace, window, cx);
+                    workspace
+                },
+            )
+            .unwrap();
+        cx.on_action(move |_: &Quit, cx| {
+            cx.defer(move |cx| {
+                let _ = workspace_window.update(cx, |workspace, window, cx| {
+                    if workspace.request_window_close(window, cx) {
+                        window.remove_window();
+                    }
+                });
+            });
+        });
         cx.activate(true);
     });
 }

@@ -10,9 +10,9 @@ use gpui::{
 };
 
 use crate::{
-    CloseWorkspace, NewWorkspace, OpenFolder, Quit, SelectWorkspace1, SelectWorkspace2,
-    SelectWorkspace3, SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7,
-    SelectWorkspace8, SelectWorkspace9,
+    CloseWorkspace, NewWorkspace, OpenFolder, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3,
+    SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8,
+    SelectWorkspace9,
     editor::{Editor, EditorEvent},
 };
 
@@ -129,7 +129,7 @@ impl WorkspaceWindow {
 
     pub fn new_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.closing_window = false;
-        self.deactivate_current(cx);
+        self.deactivate_current(window, cx);
         self.push_launcher();
         self.active = self.tabs.len() - 1;
         window.set_window_title("Nuvi");
@@ -227,7 +227,7 @@ impl WorkspaceWindow {
             return;
         }
 
-        self.deactivate_current(cx);
+        self.deactivate_current(window, cx);
         let replace = self
             .tabs
             .get(self.active)
@@ -333,7 +333,7 @@ impl WorkspaceWindow {
         if index >= self.tabs.len() {
             return;
         }
-        self.deactivate_current(cx);
+        self.deactivate_current(window, cx);
         self.active = index;
         let tab = &self.tabs[index];
         window.set_window_title(&tab.title);
@@ -348,13 +348,14 @@ impl WorkspaceWindow {
         self.activate(index, window, cx);
     }
 
-    fn deactivate_current(&self, cx: &mut Context<Self>) {
+    fn deactivate_current(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(WorkspaceTab {
             content: TabContent::Editor(editor),
             ..
         }) = self.tabs.get(self.active)
         {
             editor.update(cx, |editor, _| editor.deactivate());
+            window.blur();
         }
     }
 
@@ -639,12 +640,6 @@ impl Render for WorkspaceWindow {
             .flex()
             .flex_col()
             .bg(translucent(theme.chrome, theme.chrome_opacity))
-            .on_action(cx.listener(|this, _: &Quit, window, cx| {
-                cx.stop_propagation();
-                if this.request_window_close(window, cx) {
-                    window.remove_window();
-                }
-            }))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 cx.stop_propagation();
                 this.new_workspace(window, cx);
