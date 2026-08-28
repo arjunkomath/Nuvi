@@ -1,4 +1,8 @@
-use std::{ffi::OsString, future::Future, path::PathBuf, process::Stdio};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use async_channel::Sender;
 use async_process::{Child, ChildStdin, Command};
@@ -13,29 +17,37 @@ pub enum NvimEvent {
     Closed,
 }
 
+enum Request {
+    Input(String),
+    Resize(usize, usize),
+    Focus(bool),
+    Mouse {
+        button: &'static str,
+        action: &'static str,
+        modifiers: String,
+        row: usize,
+        col: usize,
+    },
+}
+
 #[derive(Clone)]
 pub struct NvimClient {
     nvim: Neovim<ChildStdin>,
+    requests: Sender<Request>,
     events: Sender<NvimEvent>,
 }
 
 impl NvimClient {
     pub fn input(&self, keys: String) {
-        self.rpc("input", move |nvim| async move {
-            nvim.input(&keys).await.map(|_| ())
-        });
+        self.request(Request::Input(keys));
     }
 
     pub fn resize(&self, width: usize, height: usize) {
-        self.rpc("resize", move |nvim| async move {
-            nvim.ui_try_resize(width as i64, height as i64).await
-        });
+        self.request(Request::Resize(width, height));
     }
 
     pub fn focus(&self, gained: bool) {
-        self.rpc("focus", move |nvim| async move {
-            nvim.ui_set_focus(gained).await
-        });
+        self.request(Request::Focus(gained));
     }
 
     pub fn mouse(
@@ -46,48 +58,38 @@ impl NvimClient {
         row: usize,
         col: usize,
     ) {
-        self.rpc("mouse", move |nvim| async move {
-            nvim.input_mouse(button, action, &modifiers, 0, row as i64, col as i64)
-                .await
+        self.request(Request::Mouse {
+            button,
+            action,
+            modifiers,
+            row,
+            col,
         });
     }
 
     pub fn confirm_quit(&self) {
+        // This bypasses the request queue: the command blocks inside Neovim until the
+        // user answers the confirmation dialog, and their keystrokes must keep flowing.
         let nvim = self.nvim.clone();
         let events = self.events.clone();
         async_std::task::spawn(async move {
-            match nvim.command("confirm qa").await {
-                Ok(()) => {
-                    async_std::task::sleep(std::time::Duration::from_millis(50)).await;
-                    let _ = events.send(NvimEvent::CloseCancelled).await;
-                }
-                Err(error) => {
+            // When the user confirms, Neovim exits without answering the request; when
+            // they cancel, the command completes. A follow-up request served by Neovim's
+            // main loop tells the two apart deterministically.
+            let quit = nvim.command("confirm qa").await;
+            if nvim.eval("1").await.is_ok() {
+                if let Err(error) = quit {
                     let _ = events
                         .send(NvimEvent::Error(format!("Neovim quit failed: {error}")))
                         .await;
                 }
+                let _ = events.send(NvimEvent::CloseCancelled).await;
             }
         });
     }
 
-    fn rpc<F, Fut, T, E>(&self, operation: &'static str, call: F)
-    where
-        F: FnOnce(Neovim<ChildStdin>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Send + 'static,
-        E: std::fmt::Display + Send + 'static,
-    {
-        let nvim = self.nvim.clone();
-        let events = self.events.clone();
-        async_std::task::spawn(async move {
-            if let Err(error) = call(nvim).await {
-                let _ = events
-                    .send(NvimEvent::Error(format!(
-                        "Neovim {operation} failed: {error}"
-                    )))
-                    .await;
-            }
-        });
+    fn request(&self, request: Request) {
+        let _ = self.requests.try_send(request);
     }
 }
 
@@ -179,8 +181,51 @@ impl NvimSession {
             .await
             .map_err(|error| format!("Could not attach the Nuvi UI: {error}"))?;
 
+        // A single worker delivers requests in call order; spawning a task per call
+        // would let back-to-back keystrokes reach Neovim transposed.
+        let (requests, request_queue) = async_channel::unbounded();
+        let request_nvim = nvim.clone();
+        let request_events = events.clone();
+        async_std::task::spawn(async move {
+            while let Ok(request) = request_queue.recv().await {
+                let (operation, result) = match request {
+                    Request::Input(keys) => ("input", request_nvim.input(&keys).await.map(|_| ())),
+                    Request::Resize(width, height) => (
+                        "resize",
+                        request_nvim
+                            .ui_try_resize(width as i64, height as i64)
+                            .await,
+                    ),
+                    Request::Focus(gained) => ("focus", request_nvim.ui_set_focus(gained).await),
+                    Request::Mouse {
+                        button,
+                        action,
+                        modifiers,
+                        row,
+                        col,
+                    } => (
+                        "mouse",
+                        request_nvim
+                            .input_mouse(button, action, &modifiers, 0, row as i64, col as i64)
+                            .await,
+                    ),
+                };
+                if let Err(error) = result {
+                    let _ = request_events
+                        .send(NvimEvent::Error(format!(
+                            "Neovim {operation} failed: {error}"
+                        )))
+                        .await;
+                }
+            }
+        });
+
         Ok(Self {
-            client: NvimClient { nvim, events },
+            client: NvimClient {
+                nvim,
+                requests,
+                events,
+            },
             _child: child,
         })
     }
@@ -218,7 +263,7 @@ fn find_nvim() -> Option<PathBuf> {
     if let Some(paths) = std::env::var_os("PATH") {
         for directory in std::env::split_paths(&paths) {
             let candidate = directory.join("nvim");
-            if candidate.is_file() {
+            if is_executable(&candidate) {
                 return Some(candidate);
             }
         }
@@ -226,7 +271,13 @@ fn find_nvim() -> Option<PathBuf> {
     ["/opt/homebrew/bin/nvim", "/usr/local/bin/nvim"]
         .into_iter()
         .map(PathBuf::from)
-        .find(|path| path.is_file())
+        .find(|path| is_executable(path))
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(test)]
