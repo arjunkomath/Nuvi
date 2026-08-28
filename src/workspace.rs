@@ -460,15 +460,14 @@ impl WorkspaceWindow {
                     .child(
                         div()
                             .id(("close-workspace", id))
-                            .relative()
-                            .bottom(px(1.0))
                             .flex_none()
-                            .size(px(24.0))
+                            .size(px(28.0))
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(px(7.0))
-                            .text_size(px(16.0))
+                            .text_size(px(18.0))
+                            .line_height(px(20.0))
                             .text_color(rgb(theme.muted))
                             .hover(move |this| {
                                 this.bg(rgb(theme.border)).text_color(rgb(theme.text))
@@ -515,13 +514,14 @@ impl WorkspaceWindow {
                     .items_center()
                     .justify_center()
                     .rounded(px(7.0))
-                    .text_size(px(18.0))
+                    .text_size(px(20.0))
+                    .line_height(px(20.0))
                     .text_color(rgb(theme.muted))
                     .cursor_pointer()
                     .hover(move |this| this.bg(rgb(theme.raised)).text_color(rgb(theme.text)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| this.new_workspace(window, cx)))
-                    .child(div().relative().bottom(px(1.0)).child("+")),
+                    .child("+"),
             )
     }
 
@@ -611,39 +611,22 @@ impl WorkspaceWindow {
                             .child("Open a workspace"),
                     )
                     .child(
-                        div()
-                            .id("open-folder")
-                            .mt(px(18.0))
-                            .h(px(40.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .px(px(12.0))
-                            .rounded(px(7.0))
-                            .border_1()
-                            .border_color(rgb(theme.border))
-                            .bg(rgb(theme.chrome))
-                            .cursor_pointer()
-                            .hover(move |this| {
-                                this.border_color(rgb(theme.muted)).bg(rgb(theme.raised))
-                            })
-                            .active(|this| this.opacity(0.82))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.choose_folder(window, cx)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Choose a folder…"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(rgb(theme.muted))
-                                    .child("⌘O"),
-                            ),
+                        div().mt(px(18.0)).flex().child(
+                            div()
+                                .id("open-folder")
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(theme.muted))
+                                .cursor_pointer()
+                                .hover(move |this| this.underline().text_color(rgb(theme.text)))
+                                .active(|this| this.opacity(0.82))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.choose_folder(window, cx)
+                                    }),
+                                )
+                                .child("Choose a folder…"),
+                        ),
                     )
                     .child(recents)
                     .when_some(self.status.clone(), |view, status| {
