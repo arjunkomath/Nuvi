@@ -400,8 +400,6 @@ impl WorkspaceWindow {
 
     fn render_titlebar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut tabs = div()
-            .relative()
-            .top(px(0.5))
             .flex()
             .min_w(px(0.0))
             .h_full()
@@ -448,15 +446,7 @@ impl WorkspaceWindow {
                         this.closing_window = false;
                         this.activate(index, window, cx);
                     }))
-                    .child(
-                        div()
-                            .relative()
-                            .bottom(px(1.0))
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .truncate()
-                            .child(title),
-                    )
+                    .child(div().min_w(px(0.0)).flex_1().truncate().child(title))
                     .child(
                         div()
                             .id(("close-workspace", id))
@@ -467,7 +457,7 @@ impl WorkspaceWindow {
                             .justify_center()
                             .rounded(px(7.0))
                             .text_size(px(18.0))
-                            .line_height(px(20.0))
+                            .line_height(px(28.0))
                             .text_color(rgb(theme.muted))
                             .hover(move |this| {
                                 this.bg(rgb(theme.border)).text_color(rgb(theme.text))
@@ -506,8 +496,6 @@ impl WorkspaceWindow {
             .child(
                 div()
                     .id("new-workspace")
-                    .relative()
-                    .top(px(0.5))
                     .size(px(28.0))
                     .flex_none()
                     .flex()
@@ -515,7 +503,7 @@ impl WorkspaceWindow {
                     .justify_center()
                     .rounded(px(7.0))
                     .text_size(px(20.0))
-                    .line_height(px(20.0))
+                    .line_height(px(28.0))
                     .text_color(rgb(theme.muted))
                     .cursor_pointer()
                     .hover(move |this| this.bg(rgb(theme.raised)).text_color(rgb(theme.text)))
