@@ -17,7 +17,7 @@ use gpui::{
 use nvim_rs::Value;
 
 use crate::{
-    grid::{Cell, CursorShape, Grid, RedrawResult, ScrollRecord},
+    grid::{Cell, CursorShape, RedrawResult, ScrollRecord, Ui},
     nvim::{NvimClient, NvimEvent, NvimSession},
 };
 
@@ -32,7 +32,7 @@ const EDITOR_CORNER_RADIUS: f32 = 8.0;
 const CURSOR_CORNERS: [(f32, f32); 4] = [(-0.5, -0.5), (-0.5, 0.5), (0.5, 0.5), (0.5, -0.5)];
 
 pub struct Editor {
-    grid: Grid,
+    ui: Ui,
     session: Option<NvimSession>,
     status: Option<SharedString>,
     focus: FocusHandle,
@@ -373,7 +373,7 @@ impl Editor {
         Self::blink_cursor(cx);
 
         Self {
-            grid: Grid::default(),
+            ui: Ui::default(),
             session: None,
             status: Some("Starting Neovim…".into()),
             focus: cx.focus_handle(),
@@ -433,7 +433,7 @@ impl Editor {
                                 }
 
                                 let redraw = editor
-                                    .grid
+                                    .ui
                                     .apply_redraw(&std::mem::take(&mut editor.pending_redraw));
                                 if !redraw.flushed {
                                     return;
@@ -478,7 +478,7 @@ impl Editor {
             loop {
                 let delay = editor
                     .read_with(cx, |editor, _| {
-                        let mode = editor.grid.cursor_mode();
+                        let mode = editor.ui.cursor_mode();
                         let millis = if editor.cursor_visible {
                             mode.blink_on
                         } else {
@@ -490,10 +490,10 @@ impl Editor {
                 Timer::after(delay).await;
                 if editor
                     .update(cx, |editor, cx| {
-                        let mode = editor.grid.cursor_mode();
+                        let mode = editor.ui.cursor_mode();
                         let blinking = mode.blink_on > 0
                             && mode.blink_off > 0
-                            && !editor.grid.busy
+                            && !editor.ui.busy
                             && !editor.cursor_animation.animating
                             && editor.scroll_animation.is_none();
                         let visible = if blinking {
@@ -516,7 +516,7 @@ impl Editor {
     }
 
     fn apply_animations(&mut self, redraw: RedrawResult, now: Instant) {
-        if redraw.invalidated || self.grid.busy || reduce_motion() {
+        if redraw.invalidated || self.ui.busy || reduce_motion() {
             self.snap_animations();
             return;
         }
@@ -527,7 +527,7 @@ impl Editor {
             snapped_scroll |= !self.absorb_scroll(scroll);
         }
 
-        let mode = self.grid.cursor_mode().clone();
+        let mode = self.ui.cursor_mode().clone();
         let target = self.cursor_center();
         if snapped_scroll {
             self.cursor_animation
@@ -579,10 +579,10 @@ impl Editor {
 
     fn cursor_center(&self) -> (f32, f32) {
         (
-            self.grid.cursor_row as f32
+            self.ui.grid.cursor_row as f32
                 + 0.5
-                + self.scroll_offset_for(self.grid.cursor_row, self.grid.cursor_col),
-            self.grid.cursor_col as f32 + 0.5,
+                + self.scroll_offset_for(self.ui.grid.cursor_row, self.ui.grid.cursor_col),
+            self.ui.grid.cursor_col as f32 + 0.5,
         )
     }
 
@@ -600,7 +600,7 @@ impl Editor {
 
     fn snap_animations(&mut self) {
         self.scroll_animation = None;
-        let mode = self.grid.cursor_mode().clone();
+        let mode = self.ui.cursor_mode().clone();
         self.cursor_animation
             .snap(self.cursor_center(), mode.shape, mode.cell_percentage);
         self.animation_frame = None;
@@ -632,11 +632,9 @@ impl Editor {
             .map(ScrollAnimation::offset)
             .unwrap_or(0.0);
 
-        if self
-            .scroll_animation
-            .as_ref()
-            .is_some_and(|animation| animation.contains(self.grid.cursor_row, self.grid.cursor_col))
-        {
+        if self.scroll_animation.as_ref().is_some_and(|animation| {
+            animation.contains(self.ui.grid.cursor_row, self.ui.grid.cursor_col)
+        }) {
             self.cursor_animation
                 .shift(scroll_after - scroll_before, 0.0);
         }
@@ -644,7 +642,7 @@ impl Editor {
             self.scroll_animation = None;
         }
 
-        let mode = self.grid.cursor_mode().clone();
+        let mode = self.ui.cursor_mode().clone();
         self.cursor_animation
             .retarget(self.cursor_center(), mode.shape, mode.cell_percentage);
         self.cursor_animation.advance(dt);
@@ -783,7 +781,7 @@ impl Editor {
         position: Point<Pixels>,
         held: Modifiers,
     ) {
-        if !self.grid.mouse_enabled {
+        if !self.ui.mouse_enabled {
             return;
         }
         if let (Some(client), Some((row, col))) = (self.client(), self.point_to_cell(position)) {
@@ -792,15 +790,15 @@ impl Editor {
     }
 
     fn point_to_cell(&self, position: Point<Pixels>) -> Option<(usize, usize)> {
-        if self.grid.width == 0 || self.grid.height == 0 {
+        if self.ui.grid.width == 0 || self.ui.grid.height == 0 {
             return None;
         }
         let bounds = self.bounds?;
         let row = ((position.y - bounds.top()) / self.cell_size.height).floor() as usize;
         let col = ((position.x - bounds.left()) / self.cell_size.width).floor() as usize;
         Some((
-            row.min(self.grid.height.saturating_sub(1)),
-            col.min(self.grid.width.saturating_sub(1)),
+            row.min(self.ui.grid.height.saturating_sub(1)),
+            col.min(self.ui.grid.width.saturating_sub(1)),
         ))
     }
 
@@ -815,16 +813,16 @@ impl Editor {
             self.snap_animations();
         }
         self.bounds = Some(bounds);
-        let font_changed = self.font_spec.as_deref() != Some(self.grid.guifont.as_str());
+        let font_changed = self.font_spec.as_deref() != Some(self.ui.guifont.as_str());
         if font_changed {
-            let parsed = parse_guifont(&self.grid.guifont);
+            let parsed = parse_guifont(&self.ui.guifont);
             self.font_families =
                 installed_font_families(parsed.families, &window.text_system().all_font_names());
             self.font_size = parsed.size;
             self.font_width = parsed.width;
             self.font_weight = parsed.weight;
             self.font_italic = parsed.italic;
-            self.font_spec = Some(self.grid.guifont.clone());
+            self.font_spec = Some(self.ui.guifont.clone());
             self.shape_cache.clear();
         }
         let font_families = self.font_families.clone();
@@ -832,7 +830,7 @@ impl Editor {
         let font_weight = self.font_weight;
         let font_italic = self.font_italic;
         let font_size = px(font_size);
-        if font_changed || self.metrics_linespace != self.grid.linespace {
+        if font_changed || self.metrics_linespace != self.ui.linespace {
             let base_font = grid_font(&font_families, FontWeight(font_weight), font_italic);
             let font_id = window.text_system().resolve_font(&base_font);
             let cell_width = (window
@@ -844,10 +842,10 @@ impl Editor {
             let line_height = grid_line_height(
                 window.text_system().ascent(font_id, font_size),
                 window.text_system().descent(font_id, font_size),
-                self.grid.linespace,
+                self.ui.linespace,
             );
             self.cell_size = size(cell_width, line_height);
-            self.metrics_linespace = self.grid.linespace;
+            self.metrics_linespace = self.ui.linespace;
         }
         let cell_width = self.cell_size.width;
         let line_height = self.cell_size.height;
@@ -869,16 +867,17 @@ impl Editor {
 
         let mut paint = PaintState::default();
         paint.main.backgrounds.push(
-            fill(bounds, rgb(self.grid.default_background)).corner_radii(px(EDITOR_CORNER_RADIUS)),
+            fill(bounds, rgb(self.ui.default_background)).corner_radii(px(EDITOR_CORNER_RADIUS)),
         );
-        let visible_rows = self.grid.height.min(requested.1);
-        let visible_cols = self.grid.width.min(requested.0);
+        let visible_rows = self.ui.grid.height.min(requested.1);
+        let visible_cols = self.ui.grid.width.min(requested.0);
         let mut resolved = std::mem::take(&mut self.resolved_cells);
         resolved.clear();
         resolved.extend(
-            self.grid
+            self.ui
+                .grid
                 .cells
-                .chunks(self.grid.width.max(1))
+                .chunks(self.ui.grid.width.max(1))
                 .take(visible_rows)
                 .flat_map(|row| row.iter().take(visible_cols))
                 .map(|cell| self.resolved(cell.highlight)),
@@ -914,8 +913,8 @@ impl Editor {
                 forced_width,
             };
             for row in 0..visible_rows {
-                let cells =
-                    &self.grid.cells[row * self.grid.width..row * self.grid.width + visible_cols];
+                let cells = &self.ui.grid.cells
+                    [row * self.ui.grid.width..row * self.ui.grid.width + visible_cols];
                 let highlights = &resolved[row * visible_cols..(row + 1) * visible_cols];
                 if let Some(animation) = self.scroll_animation.as_ref().filter(|animation| {
                     row >= animation.top
@@ -1020,7 +1019,7 @@ impl Editor {
                 &self.marked_text,
                 font_size,
                 &font,
-                color(self.grid.default_foreground),
+                color(self.ui.default_foreground),
                 Some(UnderlineStyle {
                     thickness: px(1.0),
                     color: Some(color(0x5e81ac)),
@@ -1031,21 +1030,21 @@ impl Editor {
             );
             paint.main.glyphs.push((
                 point(
-                    bounds.left() + cell_width * self.grid.cursor_col as f32,
-                    bounds.top() + line_height * self.grid.cursor_row as f32,
+                    bounds.left() + cell_width * self.ui.grid.cursor_col as f32,
+                    bounds.top() + line_height * self.ui.grid.cursor_row as f32,
                 ),
                 line,
             ));
         }
 
         if self.cursor_visible
-            && !self.grid.busy
-            && self.grid.cursor_row < visible_rows
-            && self.grid.cursor_col < visible_cols
+            && !self.ui.busy
+            && self.ui.grid.cursor_row < visible_rows
+            && self.ui.grid.cursor_col < visible_cols
         {
-            let mode = self.grid.cursor_mode();
+            let mode = self.ui.cursor_mode();
             let cursor_color = if mode.attr_id == 0 {
-                self.grid.default_foreground
+                self.ui.default_foreground
             } else {
                 self.resolved(mode.attr_id).background
             };
@@ -1070,7 +1069,7 @@ impl Editor {
                         .scroll_animation
                         .as_ref()
                         .filter(|animation| {
-                            animation.contains(self.grid.cursor_row, self.grid.cursor_col)
+                            animation.contains(self.ui.grid.cursor_row, self.ui.grid.cursor_col)
                         })
                         .and(scroll_mask),
                 });
@@ -1085,16 +1084,16 @@ impl Editor {
     }
 
     fn resolved(&self, id: u64) -> ResolvedHighlight {
-        let highlight = self.grid.highlights.get(&id).cloned().unwrap_or_default();
-        let mut foreground = highlight.foreground.unwrap_or(self.grid.default_foreground);
-        let mut background = highlight.background.unwrap_or(self.grid.default_background);
+        let highlight = self.ui.highlights.get(&id).cloned().unwrap_or_default();
+        let mut foreground = highlight.foreground.unwrap_or(self.ui.default_foreground);
+        let mut background = highlight.background.unwrap_or(self.ui.default_background);
         if highlight.reverse {
             std::mem::swap(&mut foreground, &mut background);
         }
         ResolvedHighlight {
             foreground,
             background,
-            special: highlight.special.unwrap_or(self.grid.default_special),
+            special: highlight.special.unwrap_or(self.ui.default_special),
             bold: highlight.bold,
             italic: highlight.italic,
             underline: highlight.underline
@@ -1510,8 +1509,8 @@ impl InputHandler for NvimInputHandler {
         let editor = self.editor.read(cx);
         Some(Bounds::new(
             point(
-                self.bounds.left() + editor.cell_size.width * editor.grid.cursor_col as f32,
-                self.bounds.top() + editor.cell_size.height * editor.grid.cursor_row as f32,
+                self.bounds.left() + editor.cell_size.width * editor.ui.grid.cursor_col as f32,
+                self.bounds.top() + editor.cell_size.height * editor.ui.grid.cursor_row as f32,
             ),
             editor.cell_size,
         ))
