@@ -19,6 +19,24 @@ For a local macOS application bundle:
 ./scripts/build-app.sh
 ```
 
+## Release
+
+Direct-distribution releases require a Developer ID Application certificate and
+a notarization profile stored in Keychain:
+
+```sh
+just signing-identities
+just notary-profile
+just release
+```
+
+The release script signs, notarizes, staples, and verifies the app, then writes
+a ZIP and SHA-256 checksum to `target/release`. Upload both files to the GitHub
+pre-release. Set `NUVI_SIGNING_IDENTITY` or `NUVI_NOTARY_PROFILE` to override
+the `Developer ID Application` and `nuvi-notary` defaults. Use
+`just release-debug` for command tracing and `just verify-release` to recheck
+the finished artifacts.
+
 Nuvi finds `nvim` on `PATH` and in the standard Homebrew locations. Set `NUVI_NVIM` to an absolute executable path to override it. Arguments passed to Nuvi are forwarded to Neovim.
 
 ## Configuration
