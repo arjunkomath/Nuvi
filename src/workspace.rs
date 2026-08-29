@@ -457,7 +457,7 @@ impl WorkspaceWindow {
                         div()
                             .id(("close-workspace", id))
                             .flex_none()
-                            .size(px(24.0))
+                            .size(px(20.0))
                             .flex()
                             .items_center()
                             .justify_center()
