@@ -10,11 +10,13 @@ use gpui::{
 };
 
 use crate::{
-    CloseWorkspace, NewWorkspace, OpenFolder, SelectWorkspace,
+    CloseWorkspace, NewWorkspace, OpenFolder, OpenSettings, SelectWorkspace,
     editor::{Editor, EditorEvent},
 };
 
 const MAX_RECENTS: usize = 8;
+const REPOSITORY_URL: &str = "https://github.com/arjunkomath/Nuvi";
+const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
 
 #[derive(Clone, Copy)]
 struct Theme {
@@ -25,6 +27,7 @@ struct Theme {
     border: u32,
     text: u32,
     muted: u32,
+    accent: u32,
     error: u32,
 }
 
@@ -42,6 +45,7 @@ impl Theme {
                 border: 0x3a3d42,
                 text: 0xe7e4de,
                 muted: 0x92908b,
+                accent: 0x6ea8fe,
                 error: 0xd58a7b,
             }
         } else {
@@ -53,6 +57,7 @@ impl Theme {
                 border: 0xdedbd6,
                 text: 0x343330,
                 muted: 0x77746f,
+                accent: 0x1769c2,
                 error: 0xa94c40,
             }
         }
@@ -62,6 +67,7 @@ impl Theme {
 #[derive(Clone)]
 enum TabContent {
     Launcher,
+    Settings,
     Editor(Entity<Editor>),
 }
 
@@ -168,6 +174,28 @@ impl WorkspaceWindow {
         .detach();
     }
 
+    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.closing_window = false;
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| matches!(tab.content, TabContent::Settings))
+        {
+            self.activate(index, window, cx);
+            return;
+        }
+
+        let id = self.take_id();
+        self.tabs.push(WorkspaceTab {
+            id,
+            title: "Settings".into(),
+            window_title: None,
+            content: TabContent::Settings,
+            _editor_subscription: None,
+        });
+        self.activate(self.tabs.len() - 1, window, cx);
+    }
+
     pub fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(self.active) else {
             return;
@@ -178,6 +206,7 @@ impl WorkspaceWindow {
                     self.remove_tab(self.active, window, cx);
                 }
             }
+            TabContent::Settings => self.remove_tab(self.active, window, cx),
             TabContent::Editor(editor) => {
                 if editor.update(cx, |editor, _| editor.request_close()) {
                     self.remove_tab(self.active, window, cx);
@@ -369,7 +398,7 @@ impl WorkspaceWindow {
         let tab = &self.tabs[index];
         window.set_window_title(tab.window_title.as_deref().unwrap_or(&tab.title));
         match &tab.content {
-            TabContent::Launcher => self.focus.focus(window),
+            TabContent::Launcher | TabContent::Settings => self.focus.focus(window),
             TabContent::Editor(editor) => {
                 editor.update(cx, |editor, _| editor.activate(window));
             }
@@ -418,14 +447,14 @@ impl WorkspaceWindow {
             let id = tab.id;
             let title = tab.title.clone();
             let tab_background = if active {
-                translucent(theme.raised, 0.82)
+                translucent(theme.raised, 0.62)
             } else {
                 translucent(theme.chrome, 0.0)
             };
             let tab_border = if active {
-                translucent(theme.border, 0.8)
+                translucent(theme.border, 0.7)
             } else {
-                translucent(theme.chrome, 0.0)
+                translucent(theme.border, 0.4)
             };
             tabs = tabs.child(
                 div()
@@ -439,14 +468,14 @@ impl WorkspaceWindow {
                     .items_center()
                     .gap(px(6.0))
                     .px(px(10.0))
-                    .rounded(px(7.0))
+                    .rounded(px(16.0))
                     .border_1()
                     .border_color(tab_border)
                     .bg(tab_background)
                     .text_color(rgb(if active { theme.text } else { theme.muted }))
                     .text_size(px(12.0))
                     .cursor_pointer()
-                    .hover(move |this| this.bg(rgb(theme.raised)))
+                    .hover(move |this| this.bg(translucent(theme.raised, 0.72)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.closing_window = false;
@@ -516,20 +545,21 @@ impl WorkspaceWindow {
     }
 
     fn render_launcher(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut recents = div().mt(px(20.0)).w_full();
-        recents = recents.child(
-            div()
-                .mb(px(7.0))
-                .text_size(px(12.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(rgb(theme.muted))
-                .child("Recent"),
-        );
+        let mut recent_items = div()
+            .mt(px(8.0))
+            .overflow_hidden()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(rgb(theme.border))
+            .bg(translucent(theme.raised, 0.45));
 
         if self.recents.is_empty() {
-            recents = recents.child(
+            recent_items = recent_items.child(
                 div()
-                    .py(px(12.0))
+                    .h(px(48.0))
+                    .flex()
+                    .items_center()
+                    .px(px(14.0))
                     .text_size(px(13.0))
                     .text_color(rgb(theme.muted))
                     .child("Folders you open will appear here."),
@@ -539,18 +569,19 @@ impl WorkspaceWindow {
                 let selected = path.clone();
                 let name = workspace_name(path).to_string();
                 let parent = display_parent(path);
-                recents = recents.child(
+                recent_items = recent_items.child(
                     div()
                         .id(("recent-workspace", index))
-                        .h(px(46.0))
+                        .h(px(52.0))
                         .w_full()
                         .flex()
                         .items_center()
-                        .mb(px(2.0))
-                        .px(px(12.0))
-                        .rounded(px(7.0))
+                        .px(px(14.0))
+                        .when(index + 1 < self.recents.len(), |row| {
+                            row.border_b_1().border_color(rgb(theme.border))
+                        })
                         .cursor_pointer()
-                        .hover(move |this| this.bg(rgb(theme.raised)))
+                        .hover(move |this| this.bg(translucent(theme.raised, 0.75)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_workspace(selected.clone(), window, cx)
                         }))
@@ -581,9 +612,21 @@ impl WorkspaceWindow {
             }
         }
 
+        let recents = div()
+            .mt(px(20.0))
+            .w_full()
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(theme.muted))
+                    .child("Recent Projects"),
+            )
+            .child(recent_items);
+
         div()
+            .relative()
             .size_full()
-            .track_focus(&self.focus)
             .flex()
             .justify_center()
             .text_color(rgb(theme.text))
@@ -601,14 +644,14 @@ impl WorkspaceWindow {
                             .child("Open a workspace"),
                     )
                     .child(
-                        div().mt(px(18.0)).flex().child(
+                        div().mt(px(8.0)).flex().child(
                             div()
                                 .id("open-folder")
                                 .text_size(px(13.0))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(theme.muted))
+                                .text_color(rgb(theme.accent))
                                 .cursor_pointer()
-                                .hover(move |this| this.underline().text_color(rgb(theme.text)))
+                                .hover(|this| this.underline())
                                 .active(|this| this.opacity(0.82))
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
@@ -628,6 +671,176 @@ impl WorkspaceWindow {
                                 .child(status),
                         )
                     }),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .bottom(px(18.0))
+                    .left_0()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .text_size(px(11.0))
+                    .text_color(translucent(theme.muted, 0.7))
+                    .child(concat!("Nuvi v", env!("CARGO_PKG_VERSION"))),
+            )
+    }
+
+    fn render_settings(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut shortcuts = div()
+            .mt(px(8.0))
+            .overflow_hidden()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(rgb(theme.border))
+            .bg(translucent(theme.raised, 0.45));
+        let commands = [
+            ("New Workspace", "⌘T"),
+            ("Open Folder", "⌘O"),
+            ("Close Tab", "⌘W"),
+            ("Open Settings", "⌘,"),
+            ("Select Tab 1–9", "⌘1–9"),
+            ("Quit Nuvi", "⌘Q"),
+        ];
+        for (index, (label, shortcut)) in commands.into_iter().enumerate() {
+            shortcuts = shortcuts.child(
+                div()
+                    .h(px(42.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(14.0))
+                    .when(index + 1 < commands.len(), |row| {
+                        row.border_b_1().border_color(rgb(theme.border))
+                    })
+                    .child(div().text_size(px(13.0)).child(label))
+                    .child(
+                        div()
+                            .px(px(8.0))
+                            .py(px(3.0))
+                            .rounded(px(6.0))
+                            .bg(translucent(theme.border, 0.35))
+                            .text_size(px(11.0))
+                            .text_color(rgb(theme.muted))
+                            .child(shortcut),
+                    ),
+            );
+        }
+
+        let about = div()
+            .mt(px(8.0))
+            .overflow_hidden()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(rgb(theme.border))
+            .bg(translucent(theme.raised, 0.45))
+            .child(
+                div()
+                    .h(px(42.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(14.0))
+                    .border_b_1()
+                    .border_color(rgb(theme.border))
+                    .child(div().text_size(px(13.0)).child("Name"))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(theme.muted))
+                            .child("Nuvi"),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(42.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(14.0))
+                    .border_b_1()
+                    .border_color(rgb(theme.border))
+                    .child(div().text_size(px(13.0)).child("Version"))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(theme.muted))
+                            .child(env!("CARGO_PKG_VERSION")),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(42.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(14.0))
+                    .child(div().text_size(px(13.0)).child("Links"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(16.0))
+                            .text_size(px(12.0))
+                            .child(
+                                div()
+                                    .id("settings-github")
+                                    .text_color(rgb(theme.accent))
+                                    .cursor_pointer()
+                                    .hover(|link| link.underline())
+                                    .on_click(
+                                        cx.listener(|_, _, _, cx| cx.open_url(REPOSITORY_URL)),
+                                    )
+                                    .child("GitHub"),
+                            )
+                            .child(
+                                div()
+                                    .id("settings-report-issue")
+                                    .text_color(rgb(theme.accent))
+                                    .cursor_pointer()
+                                    .hover(|link| link.underline())
+                                    .on_click(cx.listener(|_, _, _, cx| cx.open_url(NEW_ISSUE_URL)))
+                                    .child("Report an issue"),
+                            ),
+                    ),
+            );
+
+        div()
+            .size_full()
+            .flex()
+            .justify_center()
+            .text_color(rgb(theme.text))
+            .child(
+                div()
+                    .w(px(560.0))
+                    .max_w_full()
+                    .px(px(22.0))
+                    .py(px(46.0))
+                    .child(
+                        div()
+                            .text_size(px(22.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .line_height(px(28.0))
+                            .child("Settings"),
+                    )
+                    .child(
+                        div()
+                            .mt(px(26.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(theme.muted))
+                            .child("Keyboard Shortcuts"),
+                    )
+                    .child(shortcuts)
+                    .child(
+                        div()
+                            .mt(px(28.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(theme.muted))
+                            .child("About"),
+                    )
+                    .child(about),
             )
     }
 }
@@ -670,6 +883,7 @@ impl Render for WorkspaceWindow {
         let content = self.tabs.get(self.active).map(|tab| tab.content.clone());
         div()
             .size_full()
+            .track_focus(&self.focus)
             .flex()
             .flex_col()
             .bg(translucent(theme.chrome, theme.chrome_opacity))
@@ -684,6 +898,10 @@ impl Render for WorkspaceWindow {
             .on_action(cx.listener(|this, _: &OpenFolder, window, cx| {
                 cx.stop_propagation();
                 this.choose_folder(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                cx.stop_propagation();
+                this.open_settings(window, cx);
             }))
             .on_action(cx.listener(|this, action: &SelectWorkspace, window, cx| {
                 this.select_workspace(action.index, window, cx);
@@ -701,6 +919,7 @@ impl Render for WorkspaceWindow {
                         .bg(rgb(theme.panel))
                         .when_some(content, |shell, content| match content {
                             TabContent::Launcher => shell.child(self.render_launcher(theme, cx)),
+                            TabContent::Settings => shell.child(self.render_settings(theme, cx)),
                             TabContent::Editor(editor) => shell.child(editor),
                         }),
                 ),
