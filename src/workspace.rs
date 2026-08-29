@@ -477,6 +477,12 @@ impl WorkspaceWindow {
             let active = index == self.active;
             let id = tab.id;
             let title = tab.title.clone();
+            let hover_group: SharedString = format!("workspace-tab-{id}").into();
+            let separator_after = !active
+                && self
+                    .tabs
+                    .get(index + 1)
+                    .is_some_and(|_| index + 1 != self.active);
             let tab_background = if active {
                 translucent(theme.raised, 0.62)
             } else {
@@ -490,6 +496,8 @@ impl WorkspaceWindow {
             tabs = tabs.child(
                 div()
                     .id(("workspace-tab", id))
+                    .group(hover_group.clone())
+                    .relative()
                     .h(px(32.0))
                     .w(px(200.0))
                     .min_w(px(110.0))
@@ -523,6 +531,11 @@ impl WorkspaceWindow {
                             .justify_center()
                             .rounded(px(7.0))
                             .text_color(rgb(theme.muted))
+                            .when(!active, |close| {
+                                close
+                                    .invisible()
+                                    .group_hover(hover_group, |style| style.visible())
+                            })
                             .hover(move |this| {
                                 this.bg(rgb(theme.border)).text_color(rgb(theme.text))
                             })
@@ -535,7 +548,18 @@ impl WorkspaceWindow {
                                 }
                             }))
                             .child(titlebar_icon(TitlebarIcon::Close)),
-                    ),
+                    )
+                    .when(separator_after, |tab| {
+                        tab.child(
+                            div()
+                                .absolute()
+                                .top(px(7.0))
+                                .right(px(-3.0))
+                                .w(px(1.0))
+                                .h(px(18.0))
+                                .bg(translucent(theme.border, 0.7)),
+                        )
+                    }),
             );
         }
 
