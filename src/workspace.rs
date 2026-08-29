@@ -4,9 +4,9 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton,
+    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton, PathBuilder,
     PathPromptOptions, PromptButton, PromptLevel, Render, SharedString, Subscription, Window,
-    WindowAppearance, div, prelude::*, px, rgb,
+    WindowAppearance, canvas, div, point, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -74,6 +74,12 @@ struct WorkspaceTab {
     content: TabContent,
     /// Dropped with the tab, unsubscribing from its editor's events.
     _editor_subscription: Option<Subscription>,
+}
+
+#[derive(Clone, Copy)]
+enum TitlebarIcon {
+    Add,
+    Close,
 }
 
 pub struct WorkspaceWindow {
@@ -456,8 +462,6 @@ impl WorkspaceWindow {
                             .items_center()
                             .justify_center()
                             .rounded(px(7.0))
-                            .text_size(px(18.0))
-                            .line_height(px(28.0))
                             .text_color(rgb(theme.muted))
                             .hover(move |this| {
                                 this.bg(rgb(theme.border)).text_color(rgb(theme.text))
@@ -470,7 +474,7 @@ impl WorkspaceWindow {
                                     this.close_workspace(window, cx);
                                 }
                             }))
-                            .child("×"),
+                            .child(titlebar_icon(TitlebarIcon::Close)),
                     ),
             );
         }
@@ -502,14 +506,12 @@ impl WorkspaceWindow {
                     .items_center()
                     .justify_center()
                     .rounded(px(7.0))
-                    .text_size(px(20.0))
-                    .line_height(px(28.0))
                     .text_color(rgb(theme.muted))
                     .cursor_pointer()
                     .hover(move |this| this.bg(rgb(theme.raised)).text_color(rgb(theme.text)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| this.new_workspace(window, cx)))
-                    .child("+"),
+                    .child(titlebar_icon(TitlebarIcon::Add)),
             )
     }
 
@@ -628,6 +630,35 @@ impl WorkspaceWindow {
                     }),
             )
     }
+}
+
+fn titlebar_icon(icon: TitlebarIcon) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let center = bounds.center();
+            let offset = px(5.0);
+            let mut path = PathBuilder::stroke(px(2.0));
+            match icon {
+                TitlebarIcon::Add => {
+                    path.move_to(point(center.x - offset, center.y));
+                    path.line_to(point(center.x + offset, center.y));
+                    path.move_to(point(center.x, center.y - offset));
+                    path.line_to(point(center.x, center.y + offset));
+                }
+                TitlebarIcon::Close => {
+                    path.move_to(point(center.x - offset, center.y - offset));
+                    path.line_to(point(center.x + offset, center.y + offset));
+                    path.move_to(point(center.x + offset, center.y - offset));
+                    path.line_to(point(center.x - offset, center.y + offset));
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, window.text_style().color);
+            }
+        },
+    )
+    .size(px(16.0))
 }
 
 impl Render for WorkspaceWindow {
