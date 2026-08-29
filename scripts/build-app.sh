@@ -7,6 +7,7 @@ bundle="target/release/Nuvi.app"
 resources="$bundle/Contents/Resources"
 version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml)
 build=$(git rev-list --count HEAD)
+rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$resources"
 cp target/release/Nuvi "$bundle/Contents/MacOS/Nuvi"
 cp packaging/Info.plist "$bundle/Contents/Info.plist"
