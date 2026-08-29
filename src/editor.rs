@@ -546,11 +546,13 @@ impl Editor {
                             let _ = editor.update_in(cx, |editor, _, cx| {
                                 editor.session = None;
                                 editor.allow_close = true;
-                                if editor.close_requested || error.is_none() {
-                                    cx.emit(EditorEvent::Closed);
-                                } else {
-                                    editor.status = Some(Status::Error(error.unwrap().into()));
+                                if let Some(error) = error
+                                    && !editor.close_requested
+                                {
+                                    editor.status = Some(Status::Error(error.into()));
                                     cx.notify();
+                                } else {
+                                    cx.emit(EditorEvent::Closed);
                                 }
                             });
                             break;
