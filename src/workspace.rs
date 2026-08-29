@@ -483,16 +483,6 @@ impl WorkspaceWindow {
                     .tabs
                     .get(index + 1)
                     .is_some_and(|_| index + 1 != self.active);
-            let tab_background = if active {
-                translucent(theme.raised, 0.62)
-            } else {
-                translucent(theme.chrome, 0.0)
-            };
-            let tab_border = if active {
-                translucent(theme.border, 0.7)
-            } else {
-                translucent(theme.border, 0.4)
-            };
             tabs = tabs.child(
                 div()
                     .id(("workspace-tab", id))
@@ -508,9 +498,11 @@ impl WorkspaceWindow {
                     .gap(px(6.0))
                     .px(px(10.0))
                     .rounded(px(16.0))
-                    .border_1()
-                    .border_color(tab_border)
-                    .bg(tab_background)
+                    .when(active, |tab| {
+                        tab.border_1()
+                            .border_color(translucent(theme.border, 0.7))
+                            .bg(translucent(theme.raised, 0.62))
+                    })
                     .text_color(rgb(if active { theme.text } else { theme.muted }))
                     .text_size(px(12.0))
                     .cursor_pointer()
