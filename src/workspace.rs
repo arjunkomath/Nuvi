@@ -637,7 +637,10 @@ fn titlebar_icon(icon: TitlebarIcon) -> impl IntoElement {
         |_, _, _| {},
         move |bounds, _, window, _| {
             let center = bounds.center();
-            let offset = px(5.0);
+            let offset = match icon {
+                TitlebarIcon::Add => px(5.0),
+                TitlebarIcon::Close => px(4.0),
+            };
             let mut path = PathBuilder::stroke(px(2.0));
             match icon {
                 TitlebarIcon::Add => {
