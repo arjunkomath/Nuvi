@@ -226,7 +226,7 @@ impl WorkspaceWindow {
         if self.allow_window_close {
             return true;
         }
-        if self.confirming_window_close {
+        if self.confirming_window_close || self.closing_window {
             return false;
         }
 
@@ -889,29 +889,12 @@ impl WorkspaceWindow {
                     .px(px(14.0))
                     .border_b_1()
                     .border_color(rgb(theme.border))
-                    .child(div().text_size(px(13.0)).child("Name"))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(rgb(theme.muted))
-                            .child("Nuvi"),
-                    ),
-            )
-            .child(
-                div()
-                    .h(px(42.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(px(14.0))
-                    .border_b_1()
-                    .border_color(rgb(theme.border))
                     .child(div().text_size(px(13.0)).child("Version"))
                     .child(
                         div()
                             .text_size(px(12.0))
                             .text_color(rgb(theme.muted))
-                            .child(env!("CARGO_PKG_VERSION")),
+                            .child(concat!("Nuvi ", env!("CARGO_PKG_VERSION"))),
                     ),
             )
             .child(
