@@ -2,6 +2,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::Stdio,
+    time::Duration,
 };
 
 use async_channel::Sender;
@@ -14,7 +15,7 @@ pub enum NvimEvent {
     Redraw(Vec<Value>),
     Error(String),
     CloseCancelled,
-    Closed,
+    Exited(Option<String>),
 }
 
 enum Request {
@@ -95,7 +96,17 @@ impl NvimClient {
 
 pub struct NvimSession {
     pub client: NvimClient,
-    _child: Child,
+    _process: NvimProcess,
+}
+
+struct NvimProcess(Child);
+
+impl Drop for NvimProcess {
+    fn drop(&mut self) {
+        // A session is normally dropped after Neovim exits gracefully. If its
+        // owner disappears first (for example, Nuvi crashes), do not orphan it.
+        let _ = self.0.kill();
+    }
 }
 
 impl NvimSession {
@@ -144,42 +155,46 @@ impl NvimSession {
             events: events.clone(),
         };
         let (nvim, io) = Neovim::new(stdout, stdin, handler);
-        let closed = events.clone();
+        let connection_errors = events.clone();
         async_std::task::spawn(async move {
             if let Err(error) = io.await
                 && !error.is_channel_closed()
             {
-                let _ = closed
+                let _ = connection_errors
                     .send(NvimEvent::Error(format!(
                         "Neovim connection closed: {error}"
                     )))
                     .await;
             }
-            let _ = closed.send(NvimEvent::Closed).await;
         });
 
-        nvim.set_client_info(
-            "nuvi",
-            vec![
-                ("major".into(), 0.into()),
-                ("minor".into(), 1.into()),
-                ("patch".into(), 0.into()),
-            ],
-            "ui",
-            Vec::new(),
-            Vec::new(),
-        )
-        .await
-        .map_err(|error| format!("Could not identify Nuvi to Neovim: {error}"))?;
+        if let Err(error) = nvim
+            .set_client_info(
+                "nuvi",
+                vec![
+                    ("major".into(), 0.into()),
+                    ("minor".into(), 1.into()),
+                    ("patch".into(), 0.into()),
+                ],
+                "ui",
+                Vec::new(),
+                Vec::new(),
+            )
+            .await
+        {
+            close_failed_start(&mut child, &nvim).await;
+            return Err(format!("Could not identify Nuvi to Neovim: {error}"));
+        }
 
         let mut options = UiAttachOptions::new();
         options
             .set_rgb(true)
             .set_linegrid_external(true)
             .set_term_name("nuvi");
-        nvim.ui_attach(80, 24, &options)
-            .await
-            .map_err(|error| format!("Could not attach the Nuvi UI: {error}"))?;
+        if let Err(error) = nvim.ui_attach(80, 24, &options).await {
+            close_failed_start(&mut child, &nvim).await;
+            return Err(format!("Could not attach the Nuvi UI: {error}"));
+        }
 
         // A single worker delivers requests in call order; spawning a task per call
         // would let back-to-back keystrokes reach Neovim transposed.
@@ -220,15 +235,32 @@ impl NvimSession {
             }
         });
 
+        let status = child.status();
+        let exited = events.clone();
+        async_std::task::spawn(async move {
+            let error = match status.await {
+                Ok(status) if status.success() => None,
+                Ok(status) => Some(format!("Neovim exited unexpectedly ({status}).")),
+                Err(error) => Some(format!("Could not read Neovim's exit status: {error}")),
+            };
+            let _ = exited.send(NvimEvent::Exited(error)).await;
+        });
+        let process = NvimProcess(child);
+
         Ok(Self {
             client: NvimClient {
                 nvim,
                 requests,
                 events,
             },
-            _child: child,
+            _process: process,
         })
     }
+}
+
+async fn close_failed_start(child: &mut Child, nvim: &Neovim<ChildStdin>) {
+    let _ = nvim.input("<Esc>:qa!<CR>").await;
+    let _ = async_std::future::timeout(Duration::from_secs(2), child.status()).await;
 }
 
 #[derive(Clone)]
@@ -289,7 +321,7 @@ mod tests {
     use super::*;
 
     #[async_std::test]
-    async fn embedded_session_receives_redraw_and_closes() {
+    async fn embedded_session_receives_redraw_and_closes_gracefully() {
         if find_nvim().is_none() {
             return;
         }
@@ -317,7 +349,7 @@ mod tests {
                     {
                         break;
                     }
-                    NvimEvent::Closed => panic!("Neovim closed before its first redraw"),
+                    NvimEvent::Exited(_) => panic!("Neovim closed before its first redraw"),
                     _ => {}
                 }
             }
@@ -325,9 +357,9 @@ mod tests {
         .await
         .expect("Neovim did not redraw");
 
-        session.client.input("<Esc>:qa!<CR>".into());
+        session.client.confirm_quit();
         timeout(Duration::from_secs(5), async {
-            while !matches!(receiver.recv().await, Ok(NvimEvent::Closed)) {}
+            while !matches!(receiver.recv().await, Ok(NvimEvent::Exited(None))) {}
         })
         .await
         .expect("Neovim did not close");

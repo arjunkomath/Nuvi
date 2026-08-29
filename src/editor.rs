@@ -58,6 +58,7 @@ pub struct Editor {
     scroll_animation: Option<ScrollAnimation>,
     animation_frame: Option<Instant>,
     pending_redraw: Vec<Value>,
+    close_requested: bool,
     allow_close: bool,
     subscriptions: Vec<Subscription>,
 }
@@ -394,13 +395,21 @@ impl Editor {
                     let _ = editor.update(cx, |editor, cx| {
                         editor.session = Some(session);
                         editor.clear_starting_status();
+                        if editor.close_requested {
+                            editor.session.as_ref().unwrap().client.confirm_quit();
+                        }
                         cx.notify();
                     });
                 }
                 Err(error) => {
                     let _ = editor.update(cx, |editor, cx| {
                         editor.status = Some(Status::Error(error.into()));
-                        cx.notify();
+                        if editor.close_requested {
+                            editor.allow_close = true;
+                            cx.emit(EditorEvent::Closed);
+                        } else {
+                            cx.notify();
+                        }
                     });
                 }
             }
@@ -436,6 +445,7 @@ impl Editor {
             scroll_animation: None,
             animation_frame: None,
             pending_redraw: Vec::new(),
+            close_requested: false,
             allow_close: false,
             subscriptions: Vec::new(),
         }
@@ -524,17 +534,24 @@ impl Editor {
                             }
                         }
                         NvimEvent::CloseCancelled => {
-                            let update = editor.update_in(cx, |_, _, cx| {
+                            let update = editor.update_in(cx, |editor, _, cx| {
+                                editor.close_requested = false;
                                 cx.emit(EditorEvent::CloseCancelled);
                             });
                             if update.is_err() {
                                 break;
                             }
                         }
-                        NvimEvent::Closed => {
+                        NvimEvent::Exited(error) => {
                             let _ = editor.update_in(cx, |editor, _, cx| {
+                                editor.session = None;
                                 editor.allow_close = true;
-                                cx.emit(EditorEvent::Closed);
+                                if editor.close_requested || error.is_none() {
+                                    cx.emit(EditorEvent::Closed);
+                                } else {
+                                    editor.status = Some(Status::Error(error.unwrap().into()));
+                                    cx.notify();
+                                }
                             });
                             break;
                         }
@@ -756,10 +773,18 @@ impl Editor {
     }
 
     pub(crate) fn request_close(&mut self) -> bool {
-        if self.allow_close || self.session.is_none() {
+        if self.allow_close
+            || self.session.is_none() && matches!(self.status, Some(Status::Error(_)))
+        {
             return true;
         }
-        self.session.as_ref().unwrap().client.confirm_quit();
+        if self.close_requested {
+            return false;
+        }
+        self.close_requested = true;
+        if let Some(session) = &self.session {
+            session.client.confirm_quit();
+        }
         false
     }
 

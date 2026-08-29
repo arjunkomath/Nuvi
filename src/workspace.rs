@@ -226,7 +226,7 @@ impl WorkspaceWindow {
         if self.allow_window_close {
             return true;
         }
-        if self.confirming_window_close {
+        if self.confirming_window_close || self.closing_window {
             return false;
         }
 
