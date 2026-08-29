@@ -10,7 +10,10 @@ use gpui::{
 };
 use workspace::WorkspaceWindow;
 
-actions!(nuvi, [Quit, NewWorkspace, CloseWorkspace, OpenFolder]);
+actions!(
+    nuvi,
+    [Quit, NewWorkspace, CloseWorkspace, OpenFolder, OpenSettings]
+);
 
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = nuvi, no_json)]
@@ -26,6 +29,7 @@ fn main() {
             KeyBinding::new("cmd-t", NewWorkspace, None),
             KeyBinding::new("cmd-w", CloseWorkspace, None),
             KeyBinding::new("cmd-o", OpenFolder, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
         ]);
         cx.bind_keys((1..=9).map(|digit| {
             KeyBinding::new(
@@ -38,6 +42,8 @@ fn main() {
             Menu {
                 name: "Nuvi".into(),
                 items: vec![
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
                     MenuItem::action("Quit Nuvi", Quit),
