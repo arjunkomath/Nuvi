@@ -4,9 +4,9 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton,
+    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton, PathBuilder,
     PathPromptOptions, PromptButton, PromptLevel, Render, SharedString, Subscription, Window,
-    WindowAppearance, div, prelude::*, px, rgb,
+    WindowAppearance, canvas, div, point, prelude::*, px, rgb,
 };
 
 use crate::{
@@ -74,6 +74,12 @@ struct WorkspaceTab {
     content: TabContent,
     /// Dropped with the tab, unsubscribing from its editor's events.
     _editor_subscription: Option<Subscription>,
+}
+
+#[derive(Clone, Copy)]
+enum TitlebarIcon {
+    Add,
+    Close,
 }
 
 pub struct WorkspaceWindow {
@@ -400,8 +406,6 @@ impl WorkspaceWindow {
 
     fn render_titlebar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut tabs = div()
-            .relative()
-            .top(px(0.5))
             .flex()
             .min_w(px(0.0))
             .h_full()
@@ -448,27 +452,16 @@ impl WorkspaceWindow {
                         this.closing_window = false;
                         this.activate(index, window, cx);
                     }))
-                    .child(
-                        div()
-                            .relative()
-                            .bottom(px(1.0))
-                            .min_w(px(0.0))
-                            .flex_1()
-                            .truncate()
-                            .child(title),
-                    )
+                    .child(div().min_w(px(0.0)).flex_1().truncate().child(title))
                     .child(
                         div()
                             .id(("close-workspace", id))
-                            .relative()
-                            .bottom(px(1.0))
                             .flex_none()
-                            .size(px(24.0))
+                            .size(px(20.0))
                             .flex()
                             .items_center()
                             .justify_center()
                             .rounded(px(7.0))
-                            .text_size(px(16.0))
                             .text_color(rgb(theme.muted))
                             .hover(move |this| {
                                 this.bg(rgb(theme.border)).text_color(rgb(theme.text))
@@ -481,7 +474,7 @@ impl WorkspaceWindow {
                                     this.close_workspace(window, cx);
                                 }
                             }))
-                            .child("×"),
+                            .child(titlebar_icon(TitlebarIcon::Close)),
                     ),
             );
         }
@@ -507,21 +500,18 @@ impl WorkspaceWindow {
             .child(
                 div()
                     .id("new-workspace")
-                    .relative()
-                    .top(px(0.5))
                     .size(px(28.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
                     .rounded(px(7.0))
-                    .text_size(px(18.0))
                     .text_color(rgb(theme.muted))
                     .cursor_pointer()
                     .hover(move |this| this.bg(rgb(theme.raised)).text_color(rgb(theme.text)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, window, cx| this.new_workspace(window, cx)))
-                    .child(div().relative().bottom(px(1.0)).child("+")),
+                    .child(titlebar_icon(TitlebarIcon::Add)),
             )
     }
 
@@ -611,39 +601,22 @@ impl WorkspaceWindow {
                             .child("Open a workspace"),
                     )
                     .child(
-                        div()
-                            .id("open-folder")
-                            .mt(px(18.0))
-                            .h(px(40.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .px(px(12.0))
-                            .rounded(px(7.0))
-                            .border_1()
-                            .border_color(rgb(theme.border))
-                            .bg(rgb(theme.chrome))
-                            .cursor_pointer()
-                            .hover(move |this| {
-                                this.border_color(rgb(theme.muted)).bg(rgb(theme.raised))
-                            })
-                            .active(|this| this.opacity(0.82))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.choose_folder(window, cx)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Choose a folder…"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(rgb(theme.muted))
-                                    .child("⌘O"),
-                            ),
+                        div().mt(px(18.0)).flex().child(
+                            div()
+                                .id("open-folder")
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(theme.muted))
+                                .cursor_pointer()
+                                .hover(move |this| this.underline().text_color(rgb(theme.text)))
+                                .active(|this| this.opacity(0.82))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.choose_folder(window, cx)
+                                    }),
+                                )
+                                .child("Choose a folder…"),
+                        ),
                     )
                     .child(recents)
                     .when_some(self.status.clone(), |view, status| {
@@ -657,6 +630,38 @@ impl WorkspaceWindow {
                     }),
             )
     }
+}
+
+fn titlebar_icon(icon: TitlebarIcon) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let center = bounds.center();
+            let offset = match icon {
+                TitlebarIcon::Add => px(5.0),
+                TitlebarIcon::Close => px(4.0),
+            };
+            let mut path = PathBuilder::stroke(px(2.0));
+            match icon {
+                TitlebarIcon::Add => {
+                    path.move_to(point(center.x - offset, center.y));
+                    path.line_to(point(center.x + offset, center.y));
+                    path.move_to(point(center.x, center.y - offset));
+                    path.line_to(point(center.x, center.y + offset));
+                }
+                TitlebarIcon::Close => {
+                    path.move_to(point(center.x - offset, center.y - offset));
+                    path.line_to(point(center.x + offset, center.y + offset));
+                    path.move_to(point(center.x + offset, center.y - offset));
+                    path.line_to(point(center.x - offset, center.y + offset));
+                }
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, window.text_style().color);
+            }
+        },
+    )
+    .size(px(16.0))
 }
 
 impl Render for WorkspaceWindow {
