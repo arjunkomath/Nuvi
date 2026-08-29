@@ -4,30 +4,19 @@ mod nvim;
 mod workspace;
 
 use gpui::{
-    App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
+    Action, App, AppContext, Application, Bounds, KeyBinding, Menu, MenuItem, SystemMenuType,
     TitlebarOptions, WindowBackgroundAppearance, WindowBounds, WindowOptions, actions, point, px,
     size,
 };
 use workspace::WorkspaceWindow;
 
-actions!(
-    nuvi,
-    [
-        Quit,
-        NewWorkspace,
-        CloseWorkspace,
-        OpenFolder,
-        SelectWorkspace1,
-        SelectWorkspace2,
-        SelectWorkspace3,
-        SelectWorkspace4,
-        SelectWorkspace5,
-        SelectWorkspace6,
-        SelectWorkspace7,
-        SelectWorkspace8,
-        SelectWorkspace9,
-    ]
-);
+actions!(nuvi, [Quit, NewWorkspace, CloseWorkspace, OpenFolder]);
+
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = nuvi, no_json)]
+pub struct SelectWorkspace {
+    pub index: usize,
+}
 
 fn main() {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -37,16 +26,14 @@ fn main() {
             KeyBinding::new("cmd-t", NewWorkspace, None),
             KeyBinding::new("cmd-w", CloseWorkspace, None),
             KeyBinding::new("cmd-o", OpenFolder, None),
-            KeyBinding::new("cmd-1", SelectWorkspace1, None),
-            KeyBinding::new("cmd-2", SelectWorkspace2, None),
-            KeyBinding::new("cmd-3", SelectWorkspace3, None),
-            KeyBinding::new("cmd-4", SelectWorkspace4, None),
-            KeyBinding::new("cmd-5", SelectWorkspace5, None),
-            KeyBinding::new("cmd-6", SelectWorkspace6, None),
-            KeyBinding::new("cmd-7", SelectWorkspace7, None),
-            KeyBinding::new("cmd-8", SelectWorkspace8, None),
-            KeyBinding::new("cmd-9", SelectWorkspace9, None),
         ]);
+        cx.bind_keys((1..=9).map(|digit| {
+            KeyBinding::new(
+                &format!("cmd-{digit}"),
+                SelectWorkspace { index: digit - 1 },
+                None,
+            )
+        }));
         cx.set_menus(vec![
             Menu {
                 name: "Nuvi".into(),

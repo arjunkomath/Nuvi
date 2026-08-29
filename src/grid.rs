@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
+use compact_str::CompactString;
 use nvim_rs::Value;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cell {
-    pub text: String,
+    // Inline storage: almost every cell is one grapheme, and cells are written,
+    // cloned, and defaulted in bulk on every resize and scroll.
+    pub text: CompactString,
     pub highlight: u64,
 }
 
@@ -29,7 +32,7 @@ pub struct RedrawResult {
 impl Default for Cell {
     fn default() -> Self {
         Self {
-            text: " ".into(),
+            text: CompactString::const_new(" "),
             highlight: 0,
         }
     }
@@ -84,17 +87,26 @@ impl Default for CursorMode {
     }
 }
 
-#[derive(Clone, Debug)]
+/// The cell buffer of a single grid.
+#[derive(Clone, Debug, Default)]
 pub struct Grid {
     pub width: usize,
     pub height: usize,
     pub cells: Vec<Cell>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+}
+
+/// Session-wide UI state shared by every grid. The UI attaches without
+/// `ext_multigrid`, so a single grid exists today; multigrid support will
+/// replace `grid` with a keyed collection without touching the shared fields.
+#[derive(Clone, Debug)]
+pub struct Ui {
+    pub grid: Grid,
     pub highlights: HashMap<u64, Highlight>,
     pub default_foreground: u32,
     pub default_background: u32,
     pub default_special: u32,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
     pub cursor_modes: Vec<CursorMode>,
     pub mode_index: usize,
     pub cursor_style_enabled: bool,
@@ -105,18 +117,14 @@ pub struct Grid {
     pub linespace: i64,
 }
 
-impl Default for Grid {
+impl Default for Ui {
     fn default() -> Self {
         Self {
-            width: 0,
-            height: 0,
-            cells: Vec::new(),
+            grid: Grid::default(),
             highlights: HashMap::new(),
             default_foreground: 0xd8dee9,
             default_background: 0x1e222a,
             default_special: 0xd8dee9,
-            cursor_row: 0,
-            cursor_col: 0,
             cursor_modes: vec![CursorMode::default()],
             mode_index: 0,
             cursor_style_enabled: true,
@@ -129,12 +137,7 @@ impl Default for Grid {
     }
 }
 
-impl Grid {
-    #[cfg(test)]
-    pub fn cell(&self, row: usize, col: usize) -> Option<&Cell> {
-        (row < self.height && col < self.width).then(|| &self.cells[row * self.width + col])
-    }
-
+impl Ui {
     pub fn cursor_mode(&self) -> &CursorMode {
         self.cursor_modes
             .get(self.mode_index)
@@ -169,21 +172,21 @@ impl Grid {
         match name {
             "grid_resize" if int(p, 0) == Some(1) => {
                 if let (Some(width), Some(height)) = (usize_at(p, 1), usize_at(p, 2)) {
-                    self.resize(width, height);
+                    self.grid.resize(width, height);
                     result.invalidated = true;
                 }
             }
             "grid_clear" if int(p, 0) == Some(1) => {
-                self.cells.fill(Cell::default());
+                self.grid.cells.fill(Cell::default());
                 result.invalidated = true;
             }
             "grid_destroy" if int(p, 0) == Some(1) => {
-                self.resize(0, 0);
+                self.grid.resize(0, 0);
                 result.invalidated = true;
             }
-            "grid_line" if int(p, 0) == Some(1) => self.line(p),
+            "grid_line" if int(p, 0) == Some(1) => self.grid.line(p),
             "grid_scroll" if int(p, 0) == Some(1) => {
-                if let Some(scroll) = self.scroll(p) {
+                if let Some(scroll) = self.grid.scroll(p) {
                     result.scrolls.push(scroll);
                 } else if int(p, 6).is_some_and(|cols| cols != 0) {
                     result.invalidated = true;
@@ -191,8 +194,8 @@ impl Grid {
             }
             "grid_cursor_goto" if int(p, 0) == Some(1) => {
                 if let (Some(row), Some(col)) = (usize_at(p, 1), usize_at(p, 2)) {
-                    self.cursor_row = row;
-                    self.cursor_col = col;
+                    self.grid.cursor_row = row;
+                    self.grid.cursor_col = col;
                 }
             }
             "default_colors_set" => {
@@ -225,154 +228,6 @@ impl Grid {
             }
             "option_set" => result.invalidated |= self.set_option(p),
             _ => {}
-        }
-    }
-
-    fn resize(&mut self, width: usize, height: usize) {
-        let mut cells = vec![Cell::default(); width.saturating_mul(height)];
-        for row in 0..height.min(self.height) {
-            for col in 0..width.min(self.width) {
-                cells[row * width + col] = self.cells[row * self.width + col].clone();
-            }
-        }
-        self.width = width;
-        self.height = height;
-        self.cells = cells;
-    }
-
-    fn line(&mut self, p: &[Value]) {
-        let (Some(row), Some(mut col), Some(cells)) = (
-            usize_at(p, 1),
-            usize_at(p, 2),
-            p.get(3).and_then(Value::as_array),
-        ) else {
-            return;
-        };
-        if row >= self.height {
-            return;
-        }
-
-        let mut highlight = 0;
-        for item in cells {
-            let Some(item) = item.as_array() else {
-                continue;
-            };
-            let Some(text) = item.first().and_then(Value::as_str) else {
-                continue;
-            };
-            if let Some(value) = item.get(1).and_then(Value::as_u64) {
-                highlight = value;
-            }
-            let repeat = item.get(2).and_then(Value::as_u64).unwrap_or(1) as usize;
-            for _ in 0..repeat {
-                if col < self.width {
-                    self.cells[row * self.width + col] = Cell {
-                        text: text.into(),
-                        highlight,
-                    };
-                }
-                col += 1;
-            }
-        }
-    }
-
-    fn scroll(&mut self, p: &[Value]) -> Option<ScrollRecord> {
-        let (Some(top), Some(bottom), Some(left), Some(right), Some(rows), Some(cols)) = (
-            usize_at(p, 1),
-            usize_at(p, 2),
-            usize_at(p, 3),
-            usize_at(p, 4),
-            int(p, 5),
-            int(p, 6),
-        ) else {
-            return None;
-        };
-        let bottom = bottom.min(self.height);
-        let right = right.min(self.width);
-        if top >= bottom || left >= right || (rows == 0 && cols == 0) {
-            return None;
-        }
-
-        if cols != 0 {
-            self.scroll_generic(top, bottom, left, right, rows, cols);
-            return None;
-        }
-
-        let shift = rows.unsigned_abs().min((bottom - top) as u64) as usize;
-        let evicted_range = if rows > 0 {
-            top..top + shift
-        } else {
-            bottom - shift..bottom
-        };
-        let mut evicted = Vec::with_capacity(shift);
-        for row in evicted_range {
-            evicted.push(
-                (left..right)
-                    .map(|col| std::mem::take(&mut self.cells[row * self.width + col]))
-                    .collect(),
-            );
-        }
-
-        if rows > 0 {
-            for source_row in top + shift..bottom {
-                let destination_row = source_row - shift;
-                for col in left..right {
-                    self.cells.swap(
-                        destination_row * self.width + col,
-                        source_row * self.width + col,
-                    );
-                }
-            }
-        } else {
-            for source_row in (top..bottom - shift).rev() {
-                let destination_row = source_row + shift;
-                for col in left..right {
-                    self.cells.swap(
-                        destination_row * self.width + col,
-                        source_row * self.width + col,
-                    );
-                }
-            }
-        }
-
-        Some(ScrollRecord {
-            top,
-            bottom,
-            left,
-            right,
-            rows,
-            evicted,
-        })
-    }
-
-    fn scroll_generic(
-        &mut self,
-        top: usize,
-        bottom: usize,
-        left: usize,
-        right: usize,
-        rows: i64,
-        cols: i64,
-    ) {
-        let source = self.cells.clone();
-        for row in top..bottom {
-            for col in left..right {
-                self.cells[row * self.width + col] = Cell::default();
-            }
-        }
-        for source_row in top..bottom {
-            for source_col in left..right {
-                let destination_row = source_row as i64 - rows;
-                let destination_col = source_col as i64 - cols;
-                if destination_row >= top as i64
-                    && destination_row < bottom as i64
-                    && destination_col >= left as i64
-                    && destination_col < right as i64
-                {
-                    self.cells[destination_row as usize * self.width + destination_col as usize] =
-                        source[source_row * self.width + source_col].clone();
-                }
-            }
         }
     }
 
@@ -476,6 +331,130 @@ impl Grid {
     }
 }
 
+impl Grid {
+    #[cfg(test)]
+    pub fn cell(&self, row: usize, col: usize) -> Option<&Cell> {
+        (row < self.height && col < self.width).then(|| &self.cells[row * self.width + col])
+    }
+
+    fn resize(&mut self, width: usize, height: usize) {
+        let mut cells = vec![Cell::default(); width.saturating_mul(height)];
+        for row in 0..height.min(self.height) {
+            for col in 0..width.min(self.width) {
+                cells[row * width + col] = self.cells[row * self.width + col].clone();
+            }
+        }
+        self.width = width;
+        self.height = height;
+        self.cells = cells;
+    }
+
+    fn line(&mut self, p: &[Value]) {
+        let (Some(row), Some(mut col), Some(cells)) = (
+            usize_at(p, 1),
+            usize_at(p, 2),
+            p.get(3).and_then(Value::as_array),
+        ) else {
+            return;
+        };
+        if row >= self.height {
+            return;
+        }
+
+        let mut highlight = 0;
+        for item in cells {
+            let Some(item) = item.as_array() else {
+                continue;
+            };
+            let Some(text) = item.first().and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(value) = item.get(1).and_then(Value::as_u64) {
+                highlight = value;
+            }
+            let repeat = item.get(2).and_then(Value::as_u64).unwrap_or(1) as usize;
+            for _ in 0..repeat {
+                if col < self.width {
+                    self.cells[row * self.width + col] = Cell {
+                        text: text.into(),
+                        highlight,
+                    };
+                }
+                col += 1;
+            }
+        }
+    }
+
+    fn scroll(&mut self, p: &[Value]) -> Option<ScrollRecord> {
+        let (Some(top), Some(bottom), Some(left), Some(right), Some(rows), Some(cols)) = (
+            usize_at(p, 1),
+            usize_at(p, 2),
+            usize_at(p, 3),
+            usize_at(p, 4),
+            int(p, 5),
+            int(p, 6),
+        ) else {
+            return None;
+        };
+        let bottom = bottom.min(self.height);
+        let right = right.min(self.width);
+        if top >= bottom || left >= right || rows == 0 {
+            return None;
+        }
+        if cols != 0 {
+            // Reserved by the protocol; current Neovim always sends cols == 0, so
+            // the caller just invalidates instead of carrying an untestable path.
+            return None;
+        }
+
+        let shift = rows.unsigned_abs().min((bottom - top) as u64) as usize;
+        let evicted_range = if rows > 0 {
+            top..top + shift
+        } else {
+            bottom - shift..bottom
+        };
+        let mut evicted = Vec::with_capacity(shift);
+        for row in evicted_range {
+            evicted.push(
+                (left..right)
+                    .map(|col| std::mem::take(&mut self.cells[row * self.width + col]))
+                    .collect(),
+            );
+        }
+
+        if rows > 0 {
+            for source_row in top + shift..bottom {
+                let destination_row = source_row - shift;
+                for col in left..right {
+                    self.cells.swap(
+                        destination_row * self.width + col,
+                        source_row * self.width + col,
+                    );
+                }
+            }
+        } else {
+            for source_row in (top..bottom - shift).rev() {
+                let destination_row = source_row + shift;
+                for col in left..right {
+                    self.cells.swap(
+                        destination_row * self.width + col,
+                        source_row * self.width + col,
+                    );
+                }
+            }
+        }
+
+        Some(ScrollRecord {
+            top,
+            bottom,
+            left,
+            right,
+            rows,
+            evicted,
+        })
+    }
+}
+
 fn usize_at(values: &[Value], index: usize) -> Option<usize> {
     values.get(index)?.as_u64().map(|value| value as usize)
 }
@@ -544,36 +523,36 @@ mod tests {
             Value::Array(vec!["flush".into(), Value::Array(vec![])]),
         ];
 
-        let mut grid = Grid::default();
-        let result = grid.apply_redraw(&redraw);
+        let mut ui = Ui::default();
+        let result = ui.apply_redraw(&redraw);
         assert!(result.flushed);
         assert!(result.title_changed);
-        assert_eq!(grid.title, "main.rs — nuvi");
+        assert_eq!(ui.title, "main.rs — nuvi");
         assert_eq!(result.scrolls.len(), 1);
         assert_eq!(result.scrolls[0].evicted.len(), 1);
         assert_eq!(
-            grid.cell(2, 0),
+            ui.grid.cell(2, 0),
             Some(&Cell {
                 text: "a".into(),
                 highlight: 7
             })
         );
         assert_eq!(
-            grid.cell(2, 1),
+            ui.grid.cell(2, 1),
             Some(&Cell {
                 text: "b".into(),
                 highlight: 7
             })
         );
         assert_eq!(
-            grid.cell(2, 2),
+            ui.grid.cell(2, 2),
             Some(&Cell {
                 text: "c".into(),
                 highlight: 8
             })
         );
         assert_eq!(
-            grid.cell(2, 3),
+            ui.grid.cell(2, 3),
             Some(&Cell {
                 text: "c".into(),
                 highlight: 8
@@ -588,7 +567,8 @@ mod tests {
             grid.resize(4, 3);
             for row in 0..grid.height {
                 for col in 0..grid.width {
-                    grid.cells[row * grid.width + col].text = format!("{row}{col}");
+                    grid.cells[row * grid.width + col].text =
+                        compact_str::format_compact!("{row}{col}");
                 }
             }
             grid

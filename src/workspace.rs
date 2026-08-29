@@ -10,9 +10,7 @@ use gpui::{
 };
 
 use crate::{
-    CloseWorkspace, NewWorkspace, OpenFolder, SelectWorkspace1, SelectWorkspace2, SelectWorkspace3,
-    SelectWorkspace4, SelectWorkspace5, SelectWorkspace6, SelectWorkspace7, SelectWorkspace8,
-    SelectWorkspace9,
+    CloseWorkspace, NewWorkspace, OpenFolder, SelectWorkspace,
     editor::{Editor, EditorEvent},
 };
 
@@ -70,7 +68,12 @@ enum TabContent {
 struct WorkspaceTab {
     id: usize,
     title: SharedString,
+    /// Title reported by Neovim's `set_title` event, shown on the window
+    /// while this tab is active; the tab label keeps the workspace name.
+    window_title: Option<SharedString>,
     content: TabContent,
+    /// Dropped with the tab, unsubscribing from its editor's events.
+    _editor_subscription: Option<Subscription>,
 }
 
 pub struct WorkspaceWindow {
@@ -111,7 +114,7 @@ impl WorkspaceWindow {
                 .map(PathBuf::from)
                 .find(|path| path.is_dir())
                 .and_then(|path| path.canonicalize().ok().or(Some(path)));
-            this.push_editor(args, None, path.clone(), false, window, cx);
+            this.push_editor(args, path.clone(), path.clone(), false, window, cx);
             if let Some(path) = path {
                 promote_recent(&mut this.recents, path, MAX_RECENTS);
                 this.save_recents();
@@ -216,7 +219,9 @@ impl WorkspaceWindow {
         self.tabs.push(WorkspaceTab {
             id,
             title: "New Workspace".into(),
+            window_title: None,
             content: TabContent::Launcher,
+            _editor_subscription: None,
         });
     }
 
@@ -266,19 +271,25 @@ impl WorkspaceWindow {
             .to_string();
         let editor = cx.new(|cx| Editor::new(window, args, working_directory, cx));
         Editor::bind_window(&editor, window, cx);
-        self.subscriptions.push(cx.subscribe_in(
-            &editor,
-            window,
-            move |this, _, event, window, cx| match event {
-                EditorEvent::CloseCancelled => this.closing_window = false,
-                EditorEvent::Closed => this.editor_closed(id, window, cx),
-            },
-        ));
+        let subscription =
+            cx.subscribe_in(
+                &editor,
+                window,
+                move |this, _, event, window, cx| match event {
+                    EditorEvent::CloseCancelled => this.closing_window = false,
+                    EditorEvent::Closed => this.editor_closed(id, window, cx),
+                    EditorEvent::Title(title) => {
+                        this.editor_title_changed(id, title.clone(), window)
+                    }
+                },
+            );
 
         let tab = WorkspaceTab {
             id,
             title: title.into(),
+            window_title: None,
             content: TabContent::Editor(editor),
+            _editor_subscription: Some(subscription),
         };
         if replace_active {
             self.tabs[self.active] = tab;
@@ -287,6 +298,16 @@ impl WorkspaceWindow {
             self.active = self.tabs.len() - 1;
         }
         self.activate(self.active, window, cx);
+    }
+
+    fn editor_title_changed(&mut self, id: usize, title: SharedString, window: &mut Window) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        self.tabs[index].window_title = Some(title.clone());
+        if index == self.active {
+            window.set_window_title(&title);
+        }
     }
 
     fn editor_closed(&mut self, id: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -340,7 +361,7 @@ impl WorkspaceWindow {
         self.deactivate_current(cx);
         self.active = index;
         let tab = &self.tabs[index];
-        window.set_window_title(&tab.title);
+        window.set_window_title(tab.window_title.as_deref().unwrap_or(&tab.title));
         match &tab.content {
             TabContent::Launcher => self.focus.focus(window),
             TabContent::Editor(editor) => {
@@ -659,32 +680,8 @@ impl Render for WorkspaceWindow {
                 cx.stop_propagation();
                 this.choose_folder(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace1, window, cx| {
-                this.select_workspace(0, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace2, window, cx| {
-                this.select_workspace(1, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace3, window, cx| {
-                this.select_workspace(2, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace4, window, cx| {
-                this.select_workspace(3, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace5, window, cx| {
-                this.select_workspace(4, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace6, window, cx| {
-                this.select_workspace(5, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace7, window, cx| {
-                this.select_workspace(6, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace8, window, cx| {
-                this.select_workspace(7, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &SelectWorkspace9, window, cx| {
-                this.select_workspace(8, window, cx);
+            .on_action(cx.listener(|this, action: &SelectWorkspace, window, cx| {
+                this.select_workspace(action.index, window, cx);
             }))
             .child(self.render_titlebar(theme, cx))
             .child(
