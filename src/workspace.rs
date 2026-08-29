@@ -4,9 +4,10 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton, PathBuilder,
-    PathPromptOptions, PromptButton, PromptLevel, Render, SharedString, Subscription, Window,
-    WindowAppearance, canvas, div, point, prelude::*, px, rgb,
+    App, AppContext, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathBuilder, PathPromptOptions, Pixels,
+    PromptButton, PromptLevel, Render, SharedString, Subscription, Window, WindowAppearance,
+    canvas, div, fill, point, prelude::*, px, rgb, size,
 };
 
 use crate::{
@@ -16,6 +17,7 @@ use crate::{
 
 const MAX_RECENTS: usize = 8;
 const CONTENT_WIDTH: f32 = 480.0;
+const DEFAULT_EDITOR_TRANSPARENCY: f32 = 0.0;
 const REPOSITORY_URL: &str = "https://github.com/arjunkomath/Nuvi";
 const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
 
@@ -95,6 +97,8 @@ pub struct WorkspaceWindow {
     active: usize,
     next_id: usize,
     recents: Vec<PathBuf>,
+    editor_transparency: f32,
+    adjusting_editor_transparency: bool,
     status: Option<SharedString>,
     closing_window: bool,
     confirming_window_close: bool,
@@ -110,6 +114,8 @@ impl WorkspaceWindow {
             active: 0,
             next_id: 0,
             recents: load_recents(),
+            editor_transparency: load_editor_transparency(),
+            adjusting_editor_transparency: false,
             status: None,
             closing_window: false,
             confirming_window_close: false,
@@ -305,7 +311,9 @@ impl WorkspaceWindow {
             .map(workspace_name)
             .unwrap_or("Workspace")
             .to_string();
-        let editor = cx.new(|cx| Editor::new(window, args, working_directory, cx));
+        let background_opacity = 1.0 - self.editor_transparency;
+        let editor =
+            cx.new(|cx| Editor::new(window, args, working_directory, background_opacity, cx));
         Editor::bind_window(&editor, window, cx);
         let subscription =
             cx.subscribe_in(
@@ -434,6 +442,28 @@ impl WorkspaceWindow {
         }
     }
 
+    fn set_editor_transparency(
+        &mut self,
+        position: Pixels,
+        bounds: Bounds<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor_transparency = ((position - bounds.left()) / bounds.size.width).clamp(0.0, 1.0);
+        let opacity = 1.0 - self.editor_transparency;
+        for tab in &self.tabs {
+            if let TabContent::Editor(editor) = &tab.content {
+                editor.update(cx, |editor, cx| editor.set_background_opacity(opacity, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    fn save_editor_transparency(&mut self) {
+        if let Err(error) = write_editor_transparency(self.editor_transparency) {
+            self.status = Some(format!("Could not save editor transparency: {error}").into());
+        }
+    }
+
     fn render_titlebar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let mut tabs = div()
             .flex()
@@ -513,6 +543,7 @@ impl WorkspaceWindow {
             .h(px(46.0))
             .w_full()
             .flex_none()
+            .bg(translucent(theme.chrome, theme.chrome_opacity))
             .flex()
             .items_center()
             .gap(px(7.0))
@@ -688,6 +719,106 @@ impl WorkspaceWindow {
     }
 
     fn render_settings(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let editor_transparency = self.editor_transparency;
+        let percentage = (editor_transparency * 100.0).round() as u8;
+        let workspace = cx.entity();
+        let slider = canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let track = Bounds::new(
+                    point(bounds.left() + px(6.0), bounds.center().y - px(2.0)),
+                    size(bounds.size.width - px(12.0), px(4.0)),
+                );
+                window.on_mouse_event({
+                    let workspace = workspace.clone();
+                    move |event: &MouseDownEvent, _, _, cx| {
+                        if event.button == MouseButton::Left && bounds.contains(&event.position) {
+                            workspace.update(cx, |this, cx| {
+                                this.adjusting_editor_transparency = true;
+                                this.set_editor_transparency(event.position.x, track, cx);
+                            });
+                        }
+                    }
+                });
+                window.on_mouse_event({
+                    let workspace = workspace.clone();
+                    move |event: &MouseMoveEvent, _, _, cx| {
+                        if event.dragging() && workspace.read(cx).adjusting_editor_transparency {
+                            workspace.update(cx, |this, cx| {
+                                this.set_editor_transparency(event.position.x, track, cx);
+                            });
+                        }
+                    }
+                });
+                window.on_mouse_event(move |event: &MouseUpEvent, _, _, cx| {
+                    if event.button == MouseButton::Left
+                        && workspace.read(cx).adjusting_editor_transparency
+                    {
+                        workspace.update(cx, |this, cx| {
+                            this.adjusting_editor_transparency = false;
+                            this.save_editor_transparency();
+                            cx.notify();
+                        });
+                    }
+                });
+
+                let filled = Bounds::new(
+                    track.origin,
+                    size(track.size.width * editor_transparency, track.size.height),
+                );
+                let thumb_center = point(
+                    track.left() + track.size.width * editor_transparency,
+                    bounds.center().y,
+                );
+                window.paint_quad(fill(track, rgb(theme.border)).corner_radii(px(2.0)));
+                window.paint_quad(fill(filled, rgb(theme.accent)).corner_radii(px(2.0)));
+                window.paint_quad(
+                    fill(
+                        Bounds::new(
+                            point(thumb_center.x - px(6.0), thumb_center.y - px(6.0)),
+                            size(px(12.0), px(12.0)),
+                        ),
+                        rgb(theme.accent),
+                    )
+                    .corner_radii(px(6.0)),
+                );
+            },
+        )
+        .w(px(160.0))
+        .h(px(20.0))
+        .cursor_pointer();
+        let appearance = div()
+            .mt(px(8.0))
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(rgb(theme.border))
+            .bg(translucent(theme.raised, 0.45))
+            .child(
+                div()
+                    .h(px(58.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(20.0))
+                    .px(px(14.0))
+                    .child(div().text_size(px(13.0)).child("Editor Transparency"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(slider)
+                            .child(
+                                div()
+                                    .w(px(36.0))
+                                    .text_right()
+                                    .text_size(px(12.0))
+                                    .text_color(rgb(theme.muted))
+                                    .child(format!("{percentage}%")),
+                            ),
+                    ),
+            );
+
         let mut shortcuts = div()
             .mt(px(8.0))
             .overflow_hidden()
@@ -807,7 +938,9 @@ impl WorkspaceWindow {
             );
 
         div()
+            .id("settings-scroll")
             .size_full()
+            .overflow_y_scroll()
             .flex()
             .justify_center()
             .text_color(rgb(theme.text))
@@ -827,6 +960,24 @@ impl WorkspaceWindow {
                     .child(
                         div()
                             .mt(px(26.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(theme.muted))
+                            .child("Appearance"),
+                    )
+                    .child(appearance)
+                    .when_some(self.status.clone(), |view, status| {
+                        view.child(
+                            div()
+                                .mt(px(10.0))
+                                .text_size(px(12.0))
+                                .text_color(rgb(theme.error))
+                                .child(status),
+                        )
+                    })
+                    .child(
+                        div()
+                            .mt(px(28.0))
                             .text_size(px(12.0))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(rgb(theme.muted))
@@ -887,7 +1038,6 @@ impl Render for WorkspaceWindow {
             .track_focus(&self.focus)
             .flex()
             .flex_col()
-            .bg(translucent(theme.chrome, theme.chrome_opacity))
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 cx.stop_propagation();
                 this.new_workspace(window, cx);
@@ -917,10 +1067,13 @@ impl Render for WorkspaceWindow {
                         .rounded(px(9.0))
                         .border_1()
                         .border_color(rgb(theme.border))
-                        .bg(rgb(theme.panel))
                         .when_some(content, |shell, content| match content {
-                            TabContent::Launcher => shell.child(self.render_launcher(theme, cx)),
-                            TabContent::Settings => shell.child(self.render_settings(theme, cx)),
+                            TabContent::Launcher => shell
+                                .bg(rgb(theme.panel))
+                                .child(self.render_launcher(theme, cx)),
+                            TabContent::Settings => shell
+                                .bg(rgb(theme.panel))
+                                .child(self.render_settings(theme, cx)),
                             TabContent::Editor(editor) => shell.child(editor),
                         }),
                 ),
@@ -954,11 +1107,38 @@ fn display_parent(path: &Path) -> String {
 }
 
 fn recents_file() -> Option<PathBuf> {
+    data_file("recent-workspaces")
+}
+
+fn editor_transparency_file() -> Option<PathBuf> {
+    data_file("editor-transparency")
+}
+
+fn data_file(name: &str) -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| {
         PathBuf::from(home)
             .join("Library/Application Support/Nuvi")
-            .join("recent-workspaces")
+            .join(name)
     })
+}
+
+fn load_editor_transparency() -> f32 {
+    editor_transparency_file()
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0))
+        .unwrap_or(DEFAULT_EDITOR_TRANSPARENCY)
+}
+
+fn write_editor_transparency(value: f32) -> std::io::Result<()> {
+    let Some(file) = editor_transparency_file() else {
+        return Ok(());
+    };
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(file, format!("{value:.2}"))
 }
 
 fn load_recents() -> Vec<PathBuf> {

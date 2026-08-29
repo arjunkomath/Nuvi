@@ -33,6 +33,7 @@ const CURSOR_CORNERS: [(f32, f32); 4] = [(-0.5, -0.5), (-0.5, 0.5), (0.5, 0.5), 
 
 pub struct Editor {
     ui: Ui,
+    background_opacity: f32,
     session: Option<NvimSession>,
     status: Option<Status>,
     focus: FocusHandle,
@@ -171,7 +172,7 @@ enum PowerlineSeparator {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ResolvedHighlight {
     foreground: u32,
-    background: u32,
+    background: Option<u32>,
     special: u32,
     bold: bool,
     italic: bool,
@@ -246,13 +247,15 @@ impl GridPainter<'_> {
             if touches_bottom && touches_left {
                 corners.bottom_left = radius;
             }
-            layer.backgrounds.push(
-                fill(
-                    quad_bounds,
-                    color(background.0).opacity(1.0 - background.1 as f32 / 100.0),
+            if let Some(background_color) = background.0 {
+                layer.backgrounds.push(
+                    fill(
+                        quad_bounds,
+                        color(background_color).opacity(1.0 - background.1 as f32 / 100.0),
+                    )
+                    .corner_radii(corners),
                 )
-                .corner_radii(corners),
-            );
+            }
             run_start = run_end;
         }
 
@@ -381,6 +384,7 @@ impl Editor {
         window: &Window,
         args: Vec<OsString>,
         working_directory: Option<std::path::PathBuf>,
+        background_opacity: f32,
         cx: &mut Context<Self>,
     ) -> Self {
         let (sender, receiver) = async_channel::bounded(256);
@@ -407,6 +411,7 @@ impl Editor {
 
         Self {
             ui: Ui::default(),
+            background_opacity,
             session: None,
             status: Some(Status::Starting),
             focus: cx.focus_handle(),
@@ -451,6 +456,11 @@ impl Editor {
         editor.update(cx, |editor, _| {
             editor.subscriptions.extend([focused, blurred]);
         });
+    }
+
+    pub fn set_background_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        self.background_opacity = opacity.clamp(0.0, 1.0);
+        cx.notify();
     }
 
     fn listen(window: &Window, receiver: Receiver<NvimEvent>, cx: &Context<Self>) {
@@ -949,7 +959,11 @@ impl Editor {
 
         let mut paint = PaintState::default();
         paint.main.backgrounds.push(
-            fill(bounds, rgb(self.ui.default_background)).corner_radii(px(EDITOR_CORNER_RADIUS)),
+            fill(
+                bounds,
+                color(self.ui.default_background).opacity(self.background_opacity),
+            )
+            .corner_radii(px(EDITOR_CORNER_RADIUS)),
         );
         let visible_rows = self.ui.grid.height.min(requested.1);
         let visible_cols = self.ui.grid.width.min(requested.0);
@@ -1128,7 +1142,9 @@ impl Editor {
             let cursor_color = if mode.attr_id == 0 {
                 self.ui.default_foreground
             } else {
-                self.resolved(mode.attr_id).background
+                self.resolved(mode.attr_id)
+                    .background
+                    .unwrap_or(self.ui.default_background)
             };
             let mut builder = PathBuilder::fill();
             for (index, (row, col)) in self.cursor_animation.points().into_iter().enumerate() {
@@ -1168,9 +1184,11 @@ impl Editor {
     fn resolved(&self, id: u64) -> ResolvedHighlight {
         let highlight = self.ui.highlights.get(&id).cloned().unwrap_or_default();
         let mut foreground = highlight.foreground.unwrap_or(self.ui.default_foreground);
-        let mut background = highlight.background.unwrap_or(self.ui.default_background);
+        let mut background = highlight.background;
         if highlight.reverse {
-            std::mem::swap(&mut foreground, &mut background);
+            let reverse_background = foreground;
+            foreground = background.unwrap_or(self.ui.default_background);
+            background = Some(reverse_background);
         }
         ResolvedHighlight {
             foreground,
