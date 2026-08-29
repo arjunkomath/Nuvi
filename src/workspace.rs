@@ -15,6 +15,7 @@ use crate::{
 };
 
 const MAX_RECENTS: usize = 8;
+const CONTENT_WIDTH: f32 = 480.0;
 const REPOSITORY_URL: &str = "https://github.com/arjunkomath/Nuvi";
 const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
 
@@ -632,7 +633,7 @@ impl WorkspaceWindow {
             .text_color(rgb(theme.text))
             .child(
                 div()
-                    .w(px(480.0))
+                    .w(px(CONTENT_WIDTH))
                     .max_w_full()
                     .px(px(22.0))
                     .pt(px(54.0))
@@ -812,7 +813,7 @@ impl WorkspaceWindow {
             .text_color(rgb(theme.text))
             .child(
                 div()
-                    .w(px(560.0))
+                    .w(px(CONTENT_WIDTH))
                     .max_w_full()
                     .px(px(22.0))
                     .py(px(46.0))
