@@ -385,6 +385,7 @@ impl Editor {
         window: &Window,
         args: Vec<OsString>,
         working_directory: Option<std::path::PathBuf>,
+        default_colors: (u32, u32, u32),
         background_opacity: f32,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -418,8 +419,13 @@ impl Editor {
 
         Self::listen(window, receiver, cx);
 
+        let mut ui = Ui::default();
+        ui.default_foreground = default_colors.0;
+        ui.default_background = default_colors.1;
+        ui.default_special = default_colors.2;
+
         Self {
-            ui: Ui::default(),
+            ui,
             background_opacity,
             session: None,
             status: Some(Status::Starting),
@@ -466,6 +472,14 @@ impl Editor {
         editor.update(cx, |editor, _| {
             editor.subscriptions.extend([focused, blurred]);
         });
+    }
+
+    pub fn default_colors(&self) -> (u32, u32, u32) {
+        (
+            self.ui.default_foreground,
+            self.ui.default_background,
+            self.ui.default_special,
+        )
     }
 
     pub fn set_background_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {

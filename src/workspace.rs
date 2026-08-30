@@ -36,10 +36,24 @@ struct Theme {
 
 impl Theme {
     fn for_appearance(appearance: WindowAppearance) -> Self {
-        if matches!(
+        Self::for_dark(matches!(
             appearance,
             WindowAppearance::Dark | WindowAppearance::VibrantDark
-        ) {
+        ))
+    }
+
+    fn for_editor_colors(foreground: u32, background: u32) -> Self {
+        let red = (background >> 16) & 0xff;
+        let green = (background >> 8) & 0xff;
+        let blue = background & 0xff;
+        let mut theme = Self::for_dark(red * 299 + green * 587 + blue * 114 < 128_000);
+        theme.panel = background;
+        theme.text = foreground;
+        theme
+    }
+
+    fn for_dark(dark: bool) -> Self {
+        if dark {
             Self {
                 chrome: 0x191b1e,
                 chrome_opacity: 0.78,
@@ -98,6 +112,7 @@ pub struct WorkspaceWindow {
     next_id: usize,
     recents: Vec<PathBuf>,
     editor_transparency: f32,
+    last_editor_colors: Option<(u32, u32, u32)>,
     adjusting_editor_transparency: bool,
     status: Option<SharedString>,
     closing_window: bool,
@@ -115,6 +130,7 @@ impl WorkspaceWindow {
             next_id: 0,
             recents: load_recents(),
             editor_transparency: load_editor_transparency(),
+            last_editor_colors: None,
             adjusting_editor_transparency: false,
             status: None,
             closing_window: false,
@@ -311,9 +327,21 @@ impl WorkspaceWindow {
             .map(workspace_name)
             .unwrap_or("Workspace")
             .to_string();
+        let theme = Theme::for_appearance(window.appearance());
+        let default_colors =
+            self.editor_colors(cx)
+                .unwrap_or((theme.text, theme.panel, theme.text));
         let background_opacity = 1.0 - self.editor_transparency;
-        let editor =
-            cx.new(|cx| Editor::new(window, args, working_directory, background_opacity, cx));
+        let editor = cx.new(|cx| {
+            Editor::new(
+                window,
+                args,
+                working_directory,
+                default_colors,
+                background_opacity,
+                cx,
+            )
+        });
         Editor::bind_window(&editor, window, cx);
         let subscription =
             cx.subscribe_in(
@@ -420,14 +448,30 @@ impl WorkspaceWindow {
         self.activate(index, window, cx);
     }
 
-    fn deactivate_current(&self, cx: &mut Context<Self>) {
-        if let Some(WorkspaceTab {
-            content: TabContent::Editor(editor),
-            ..
-        }) = self.tabs.get(self.active)
-        {
-            editor.update(cx, |editor, _| editor.deactivate());
+    fn deactivate_current(&mut self, cx: &mut Context<Self>) {
+        let editor = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| match &tab.content {
+                TabContent::Editor(editor) => Some(editor.clone()),
+                _ => None,
+            });
+        if let Some(editor) = editor {
+            self.last_editor_colors = Some(editor.update(cx, |editor, _| {
+                editor.deactivate();
+                editor.default_colors()
+            }));
         }
+    }
+
+    fn editor_colors(&self, cx: &Context<Self>) -> Option<(u32, u32, u32)> {
+        self.tabs
+            .get(self.active)
+            .and_then(|tab| match &tab.content {
+                TabContent::Editor(editor) => Some(editor.read(cx).default_colors()),
+                _ => None,
+            })
+            .or(self.last_editor_colors)
     }
 
     fn take_id(&mut self) -> usize {
@@ -1028,7 +1072,10 @@ fn titlebar_icon(icon: TitlebarIcon) -> impl IntoElement {
 
 impl Render for WorkspaceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::for_appearance(window.appearance());
+        let theme = self
+            .editor_colors(cx)
+            .map(|colors| Theme::for_editor_colors(colors.0, colors.1))
+            .unwrap_or_else(|| Theme::for_appearance(window.appearance()));
         let content = self.tabs.get(self.active).map(|tab| tab.content.clone());
         div()
             .size_full()
