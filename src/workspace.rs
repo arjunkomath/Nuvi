@@ -48,16 +48,6 @@ impl Theme {
         ))
     }
 
-    fn for_editor_colors(foreground: u32, background: u32) -> Self {
-        let red = (background >> 16) & 0xff;
-        let green = (background >> 8) & 0xff;
-        let blue = background & 0xff;
-        let mut theme = Self::for_dark(red * 299 + green * 587 + blue * 114 < 128_000);
-        theme.panel = background;
-        theme.text = foreground;
-        theme
-    }
-
     fn for_dark(dark: bool) -> Self {
         if dark {
             Self {
@@ -114,7 +104,6 @@ pub struct WorkspaceWindow {
     next_id: usize,
     recents: Vec<PathBuf>,
     editor_transparency: f32,
-    last_editor_colors: Option<(u32, u32, u32)>,
     adjusting_editor_transparency: bool,
     status: Option<SharedString>,
     closing_window: bool,
@@ -132,7 +121,6 @@ impl WorkspaceWindow {
             next_id: 0,
             recents: load_recents(),
             editor_transparency: load_editor_transparency(),
-            last_editor_colors: None,
             adjusting_editor_transparency: false,
             status: None,
             closing_window: false,
@@ -330,9 +318,7 @@ impl WorkspaceWindow {
             .unwrap_or("Workspace")
             .to_string();
         let theme = Theme::for_appearance(window.appearance());
-        let default_colors =
-            self.editor_colors(cx)
-                .unwrap_or((theme.text, theme.panel, theme.text));
+        let default_colors = (theme.text, theme.panel, theme.text);
         let background_opacity = 1.0 - self.editor_transparency;
         let editor = cx.new(|cx| {
             Editor::new(
@@ -352,12 +338,6 @@ impl WorkspaceWindow {
                 move |this, _, event, window, cx| match event {
                     EditorEvent::CloseCancelled => this.closing_window = false,
                     EditorEvent::Closed => this.editor_closed(id, window, cx),
-                    EditorEvent::Colors(colors) => {
-                        if this.tabs.get(this.active).is_some_and(|tab| tab.id == id) {
-                            this.last_editor_colors = Some(*colors);
-                            cx.notify();
-                        }
-                    }
                     EditorEvent::Title(title) => {
                         this.editor_title_changed(id, title.clone(), window)
                     }
@@ -457,29 +437,11 @@ impl WorkspaceWindow {
     }
 
     fn deactivate_current(&mut self, cx: &mut Context<Self>) {
-        let editor = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| match &tab.content {
-                TabContent::Editor(editor) => Some(editor.clone()),
-                _ => None,
-            });
-        if let Some(editor) = editor {
-            self.last_editor_colors = Some(editor.update(cx, |editor, _| {
-                editor.deactivate();
-                editor.default_colors()
-            }));
+        if let Some(tab) = self.tabs.get(self.active)
+            && let TabContent::Editor(editor) = &tab.content
+        {
+            editor.update(cx, |editor, _| editor.deactivate());
         }
-    }
-
-    fn editor_colors(&self, cx: &Context<Self>) -> Option<(u32, u32, u32)> {
-        self.tabs
-            .get(self.active)
-            .and_then(|tab| match &tab.content {
-                TabContent::Editor(editor) => Some(editor.read(cx).default_colors()),
-                _ => None,
-            })
-            .or(self.last_editor_colors)
     }
 
     fn take_id(&mut self) -> usize {
@@ -1087,10 +1049,7 @@ fn titlebar_icon(icon: TitlebarIcon) -> impl IntoElement {
 
 impl Render for WorkspaceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = self
-            .editor_colors(cx)
-            .map(|colors| Theme::for_editor_colors(colors.0, colors.1))
-            .unwrap_or_else(|| Theme::for_appearance(window.appearance()));
+        let theme = Theme::for_appearance(window.appearance());
         let frame_opacity = (1.0 - self.editor_transparency - 0.25).max(0.0);
         let content = self.tabs.get(self.active).map(|tab| tab.content.clone());
         div()
@@ -1307,13 +1266,6 @@ fn promote_recent(recents: &mut Vec<PathBuf>, path: PathBuf, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn editor_theme_uses_neovim_colors() {
-        let theme = Theme::for_editor_colors(0x112233, 0xfafafa);
-        assert_eq!(theme.panel, 0xfafafa);
-        assert_eq!(theme.text, 0x112233);
-    }
 
     #[test]
     fn recent_workspaces_are_unique_newest_first_and_bounded() {

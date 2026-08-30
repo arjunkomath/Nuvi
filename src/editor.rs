@@ -66,7 +66,6 @@ pub struct Editor {
 pub enum EditorEvent {
     CloseCancelled,
     Closed,
-    Colors((u32, u32, u32)),
     Title(SharedString),
 }
 
@@ -473,14 +472,6 @@ impl Editor {
         });
     }
 
-    pub fn default_colors(&self) -> (u32, u32, u32) {
-        (
-            self.ui.default_foreground,
-            self.ui.default_background,
-            self.ui.default_special,
-        )
-    }
-
     pub fn set_background_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
         self.background_opacity = opacity.clamp(0.0, 1.0);
         cx.notify();
@@ -508,7 +499,6 @@ impl Editor {
                                     editor.ui.mode_index,
                                     editor.ui.busy,
                                 );
-                                let colors_before = editor.default_colors();
                                 let redraw = editor
                                     .ui
                                     .apply_redraw(&std::mem::take(&mut editor.pending_redraw));
@@ -527,10 +517,6 @@ impl Editor {
                                 }
                                 if restart_blink {
                                     editor.restart_blink(cx);
-                                }
-                                let colors = editor.default_colors();
-                                if colors != colors_before {
-                                    cx.emit(EditorEvent::Colors(colors));
                                 }
                                 if title_changed {
                                     cx.emit(EditorEvent::Title(editor.ui.title.clone().into()));
