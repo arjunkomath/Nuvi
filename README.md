@@ -5,6 +5,12 @@ workspace tab runs an independent embedded Neovim process.
 
 <img width="2636" height="1792" alt="CleanShot 2026-08-28 at 23 43 25@2x" src="https://github.com/user-attachments/assets/e17f704d-5179-4ae5-88b4-a3d1ebac2649" />
 
+## Install
+
+```sh
+brew install --cask arjunkomath/tap/nuvi
+```
+
 ## Build
 
 Install a current Rust toolchain and Neovim, then run:

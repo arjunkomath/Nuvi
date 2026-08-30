@@ -17,14 +17,20 @@ use crate::{
 
 const MAX_RECENTS: usize = 8;
 const CONTENT_WIDTH: f32 = 480.0;
+/// Width of the frame around the content panel, below the titlebar.
+const FRAME_WIDTH: f32 = 6.0;
+/// Corner radius of the content panel. The editor rounds itself one pixel
+/// tighter (`EDITOR_CORNER_RADIUS`) to sit inside the panel's 1px border.
+const PANEL_RADIUS: f32 = 9.0;
+/// Outer radius of the frame's bottom corners; its inner curve
+/// (`FRAME_RADIUS - FRAME_WIDTH`) then matches the panel's corners exactly.
+const FRAME_RADIUS: f32 = PANEL_RADIUS + FRAME_WIDTH;
 const DEFAULT_EDITOR_TRANSPARENCY: f32 = 0.0;
 const REPOSITORY_URL: &str = "https://github.com/arjunkomath/Nuvi";
 const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
 
 #[derive(Clone, Copy)]
 struct Theme {
-    chrome: u32,
-    chrome_opacity: f32,
     panel: u32,
     raised: u32,
     border: u32,
@@ -36,13 +42,15 @@ struct Theme {
 
 impl Theme {
     fn for_appearance(appearance: WindowAppearance) -> Self {
-        if matches!(
+        Self::for_dark(matches!(
             appearance,
             WindowAppearance::Dark | WindowAppearance::VibrantDark
-        ) {
+        ))
+    }
+
+    fn for_dark(dark: bool) -> Self {
+        if dark {
             Self {
-                chrome: 0x191b1e,
-                chrome_opacity: 0.78,
                 panel: 0x222529,
                 raised: 0x2d3035,
                 border: 0x3a3d42,
@@ -53,8 +61,6 @@ impl Theme {
             }
         } else {
             Self {
-                chrome: 0xf2f1ef,
-                chrome_opacity: 0.82,
                 panel: 0xf8f7f5,
                 raised: 0xffffff,
                 border: 0xdedbd6,
@@ -311,9 +317,19 @@ impl WorkspaceWindow {
             .map(workspace_name)
             .unwrap_or("Workspace")
             .to_string();
+        let theme = Theme::for_appearance(window.appearance());
+        let default_colors = (theme.text, theme.panel, theme.text);
         let background_opacity = 1.0 - self.editor_transparency;
-        let editor =
-            cx.new(|cx| Editor::new(window, args, working_directory, background_opacity, cx));
+        let editor = cx.new(|cx| {
+            Editor::new(
+                window,
+                args,
+                working_directory,
+                default_colors,
+                background_opacity,
+                cx,
+            )
+        });
         Editor::bind_window(&editor, window, cx);
         let subscription =
             cx.subscribe_in(
@@ -420,11 +436,9 @@ impl WorkspaceWindow {
         self.activate(index, window, cx);
     }
 
-    fn deactivate_current(&self, cx: &mut Context<Self>) {
-        if let Some(WorkspaceTab {
-            content: TabContent::Editor(editor),
-            ..
-        }) = self.tabs.get(self.active)
+    fn deactivate_current(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.get(self.active)
+            && let TabContent::Editor(editor) = &tab.content
         {
             editor.update(cx, |editor, _| editor.deactivate());
         }
@@ -460,11 +474,16 @@ impl WorkspaceWindow {
 
     fn save_editor_transparency(&mut self) {
         if let Err(error) = write_editor_transparency(self.editor_transparency) {
-            self.status = Some(format!("Could not save editor transparency: {error}").into());
+            self.status = Some(format!("Could not save background transparency: {error}").into());
         }
     }
 
-    fn render_titlebar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_titlebar(
+        &self,
+        theme: Theme,
+        frame_opacity: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut tabs = div()
             .flex()
             .min_w(px(0.0))
@@ -500,11 +519,13 @@ impl WorkspaceWindow {
                     .rounded(px(16.0))
                     .border_1()
                     .border_color(translucent(theme.border, if active { 0.7 } else { 0.0 }))
-                    .when(active, |tab| tab.bg(translucent(theme.raised, 0.62)))
+                    .when(active, |tab| tab.bg(translucent(theme.panel, 0.9)))
+                    .when(!active, |tab| {
+                        tab.hover(move |tab| tab.bg(translucent(theme.raised, 0.72)))
+                    })
                     .text_color(rgb(if active { theme.text } else { theme.muted }))
                     .text_size(px(12.0))
                     .cursor_pointer()
-                    .hover(move |this| this.bg(translucent(theme.raised, 0.72)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.closing_window = false;
@@ -557,7 +578,7 @@ impl WorkspaceWindow {
             .h(px(46.0))
             .w_full()
             .flex_none()
-            .bg(translucent(theme.chrome, theme.chrome_opacity))
+            .bg(translucent(theme.panel, frame_opacity))
             .flex()
             .items_center()
             .gap(px(7.0))
@@ -815,7 +836,7 @@ impl WorkspaceWindow {
                     .justify_between()
                     .gap(px(20.0))
                     .px(px(14.0))
-                    .child(div().text_size(px(13.0)).child("Editor Transparency"))
+                    .child(div().text_size(px(13.0)).child("Background Transparency"))
                     .child(
                         div()
                             .flex()
@@ -1029,6 +1050,7 @@ fn titlebar_icon(icon: TitlebarIcon) -> impl IntoElement {
 impl Render for WorkspaceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::for_appearance(window.appearance());
+        let frame_opacity = (1.0 - self.editor_transparency - 0.25).max(0.0);
         let content = self.tabs.get(self.active).map(|tab| tab.content.clone());
         div()
             .size_full()
@@ -1054,26 +1076,92 @@ impl Render for WorkspaceWindow {
             .on_action(cx.listener(|this, action: &SelectWorkspace, window, cx| {
                 this.select_workspace(action.index, window, cx);
             }))
-            .child(self.render_titlebar(theme, cx))
+            .child(self.render_titlebar(theme, frame_opacity, cx))
             .child(
-                div().min_h(px(0.0)).flex_1().px(px(6.0)).pb(px(6.0)).child(
-                    div()
-                        .relative()
-                        .size_full()
-                        .overflow_hidden()
-                        .rounded(px(9.0))
-                        .border_1()
-                        .border_color(rgb(theme.border))
-                        .when_some(content, |shell, content| match content {
-                            TabContent::Launcher => shell
-                                .bg(rgb(theme.panel))
-                                .child(self.render_launcher(theme, cx)),
-                            TabContent::Settings => shell
-                                .bg(rgb(theme.panel))
-                                .child(self.render_settings(theme, cx)),
-                            TabContent::Editor(editor) => shell.child(editor),
-                        }),
-                ),
+                div()
+                    .relative()
+                    .min_h(px(0.0))
+                    .flex_1()
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                let frame_color = translucent(theme.panel, frame_opacity);
+                                window.paint_quad(
+                                    fill(bounds, gpui::transparent_black())
+                                        .corner_radii(gpui::Corners {
+                                            top_left: px(0.0),
+                                            top_right: px(0.0),
+                                            bottom_right: px(FRAME_RADIUS),
+                                            bottom_left: px(FRAME_RADIUS),
+                                        })
+                                        .border_widths(gpui::Edges {
+                                            top: px(0.0),
+                                            right: px(FRAME_WIDTH),
+                                            bottom: px(FRAME_WIDTH),
+                                            left: px(FRAME_WIDTH),
+                                        })
+                                        .border_color(frame_color),
+                                );
+                                // The border above has no top edge, so the panel's
+                                // rounded top corners would leave see-through notches
+                                // below the titlebar. Fill each notch: the corner
+                                // square minus the panel's quarter-circle.
+                                let radius = px(PANEL_RADIUS);
+                                for left_side in [true, false] {
+                                    let corner = point(
+                                        if left_side {
+                                            bounds.left() + px(FRAME_WIDTH)
+                                        } else {
+                                            bounds.right() - px(FRAME_WIDTH)
+                                        },
+                                        bounds.top(),
+                                    );
+                                    let along = if left_side { radius } else { -radius };
+                                    let mut path = PathBuilder::fill();
+                                    path.move_to(corner);
+                                    path.line_to(point(corner.x + along, corner.y));
+                                    path.arc_to(
+                                        point(radius, radius),
+                                        px(0.0),
+                                        false,
+                                        !left_side,
+                                        point(corner.x, corner.y + radius),
+                                    );
+                                    path.close();
+                                    if let Ok(path) = path.build() {
+                                        window.paint_path(path, frame_color);
+                                    }
+                                }
+                            },
+                        )
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .right(px(0.0))
+                        .bottom(px(0.0)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(FRAME_WIDTH))
+                            .top_0()
+                            .right(px(FRAME_WIDTH))
+                            .bottom(px(FRAME_WIDTH))
+                            .overflow_hidden()
+                            .rounded(px(PANEL_RADIUS))
+                            .border_1()
+                            .border_color(rgb(theme.border))
+                            .when_some(content, |shell, content| match content {
+                                TabContent::Launcher => shell
+                                    .bg(rgb(theme.panel))
+                                    .child(self.render_launcher(theme, cx)),
+                                TabContent::Settings => shell
+                                    .bg(rgb(theme.panel))
+                                    .child(self.render_settings(theme, cx)),
+                                TabContent::Editor(editor) => shell.child(editor),
+                            }),
+                    ),
             )
     }
 }
