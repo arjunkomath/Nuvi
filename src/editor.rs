@@ -223,12 +223,17 @@ impl GridPainter<'_> {
                     self.line_height,
                 ),
             );
+            // The grid is floor-fitted to the bounds, so the last row and
+            // column can stop short of the edge while still lying inside the
+            // corner curve of the rounded background. Round every run whose
+            // corner falls within the curve zone; a matching radius further
+            // from the corner always stays inside the background's curve.
             let mut corners = Corners::all(px(0.0));
-            let touches_left = quad_bounds.left() <= self.bounds.left();
-            let touches_right = quad_bounds.right() >= self.bounds.right();
-            let touches_top = quad_bounds.top() <= self.bounds.top();
-            let touches_bottom = quad_bounds.bottom() >= self.bounds.bottom();
             let radius = px(EDITOR_CORNER_RADIUS);
+            let touches_left = quad_bounds.left() < self.bounds.left() + radius;
+            let touches_right = quad_bounds.right() > self.bounds.right() - radius;
+            let touches_top = quad_bounds.top() < self.bounds.top() + radius;
+            let touches_bottom = quad_bounds.bottom() > self.bounds.bottom() - radius;
             if touches_top && touches_left {
                 corners.top_left = radius;
             }

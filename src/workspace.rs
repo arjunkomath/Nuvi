@@ -17,6 +17,14 @@ use crate::{
 
 const MAX_RECENTS: usize = 8;
 const CONTENT_WIDTH: f32 = 480.0;
+/// Width of the frame around the content panel, below the titlebar.
+const FRAME_WIDTH: f32 = 6.0;
+/// Corner radius of the content panel. The editor rounds itself one pixel
+/// tighter (`EDITOR_CORNER_RADIUS`) to sit inside the panel's 1px border.
+const PANEL_RADIUS: f32 = 9.0;
+/// Outer radius of the frame's bottom corners; its inner curve
+/// (`FRAME_RADIUS - FRAME_WIDTH`) then matches the panel's corners exactly.
+const FRAME_RADIUS: f32 = PANEL_RADIUS + FRAME_WIDTH;
 const DEFAULT_EDITOR_TRANSPARENCY: f32 = 0.0;
 const REPOSITORY_URL: &str = "https://github.com/arjunkomath/Nuvi";
 const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
@@ -1119,22 +1127,53 @@ impl Render for WorkspaceWindow {
                         canvas(
                             |_, _, _| {},
                             move |bounds, _, window, _| {
+                                let frame_color = translucent(theme.panel, frame_opacity);
                                 window.paint_quad(
                                     fill(bounds, gpui::transparent_black())
                                         .corner_radii(gpui::Corners {
                                             top_left: px(0.0),
                                             top_right: px(0.0),
-                                            bottom_right: px(15.0),
-                                            bottom_left: px(15.0),
+                                            bottom_right: px(FRAME_RADIUS),
+                                            bottom_left: px(FRAME_RADIUS),
                                         })
                                         .border_widths(gpui::Edges {
                                             top: px(0.0),
-                                            right: px(6.0),
-                                            bottom: px(6.0),
-                                            left: px(6.0),
+                                            right: px(FRAME_WIDTH),
+                                            bottom: px(FRAME_WIDTH),
+                                            left: px(FRAME_WIDTH),
                                         })
-                                        .border_color(translucent(theme.panel, frame_opacity)),
+                                        .border_color(frame_color),
                                 );
+                                // The border above has no top edge, so the panel's
+                                // rounded top corners would leave see-through notches
+                                // below the titlebar. Fill each notch: the corner
+                                // square minus the panel's quarter-circle.
+                                let radius = px(PANEL_RADIUS);
+                                for left_side in [true, false] {
+                                    let corner = point(
+                                        if left_side {
+                                            bounds.left() + px(FRAME_WIDTH)
+                                        } else {
+                                            bounds.right() - px(FRAME_WIDTH)
+                                        },
+                                        bounds.top(),
+                                    );
+                                    let along = if left_side { radius } else { -radius };
+                                    let mut path = PathBuilder::fill();
+                                    path.move_to(corner);
+                                    path.line_to(point(corner.x + along, corner.y));
+                                    path.arc_to(
+                                        point(radius, radius),
+                                        px(0.0),
+                                        false,
+                                        !left_side,
+                                        point(corner.x, corner.y + radius),
+                                    );
+                                    path.close();
+                                    if let Ok(path) = path.build() {
+                                        window.paint_path(path, frame_color);
+                                    }
+                                }
                             },
                         )
                         .absolute()
@@ -1146,12 +1185,12 @@ impl Render for WorkspaceWindow {
                     .child(
                         div()
                             .absolute()
-                            .left(px(6.0))
+                            .left(px(FRAME_WIDTH))
                             .top_0()
-                            .right(px(6.0))
-                            .bottom(px(6.0))
+                            .right(px(FRAME_WIDTH))
+                            .bottom(px(FRAME_WIDTH))
                             .overflow_hidden()
-                            .rounded(px(9.0))
+                            .rounded(px(PANEL_RADIUS))
                             .border_1()
                             .border_color(rgb(theme.border))
                             .when_some(content, |shell, content| match content {
