@@ -35,7 +35,7 @@ pub struct Editor {
     ui: Ui,
     background_opacity: f32,
     session: Option<NvimSession>,
-    status: Option<Status>,
+    error: Option<SharedString>,
     focus: FocusHandle,
     bounds: Option<Bounds<Pixels>>,
     cell_size: Size<Pixels>,
@@ -66,15 +66,8 @@ pub struct Editor {
 pub enum EditorEvent {
     CloseCancelled,
     Closed,
+    Colors((u32, u32, u32)),
     Title(SharedString),
-}
-
-/// Overlay shown in the corner of the editor. Startup progress clears itself
-/// on the first redraw; errors stay until the user dismisses them.
-#[derive(Clone)]
-enum Status {
-    Starting,
-    Error(SharedString),
 }
 
 // The font and size are deliberately not part of the key: whenever they change,
@@ -395,7 +388,6 @@ impl Editor {
                 Ok(session) => {
                     let _ = editor.update(cx, |editor, cx| {
                         editor.session = Some(session);
-                        editor.clear_starting_status();
                         if editor.close_requested {
                             editor.session.as_ref().unwrap().client.confirm_quit();
                         }
@@ -404,7 +396,7 @@ impl Editor {
                 }
                 Err(error) => {
                     let _ = editor.update(cx, |editor, cx| {
-                        editor.status = Some(Status::Error(error.into()));
+                        editor.error = Some(error.into());
                         if editor.close_requested {
                             editor.allow_close = true;
                             cx.emit(EditorEvent::Closed);
@@ -419,16 +411,18 @@ impl Editor {
 
         Self::listen(window, receiver, cx);
 
-        let mut ui = Ui::default();
-        ui.default_foreground = default_colors.0;
-        ui.default_background = default_colors.1;
-        ui.default_special = default_colors.2;
+        let ui = Ui {
+            default_foreground: default_colors.0,
+            default_background: default_colors.1,
+            default_special: default_colors.2,
+            ..Ui::default()
+        };
 
         Self {
             ui,
             background_opacity,
             session: None,
-            status: Some(Status::Starting),
+            error: None,
             focus: cx.focus_handle(),
             bounds: None,
             cell_size: size(px(8.0), px(20.0)),
@@ -509,6 +503,7 @@ impl Editor {
                                     editor.ui.mode_index,
                                     editor.ui.busy,
                                 );
+                                let colors_before = editor.default_colors();
                                 let redraw = editor
                                     .ui
                                     .apply_redraw(&std::mem::take(&mut editor.pending_redraw));
@@ -528,10 +523,13 @@ impl Editor {
                                 if restart_blink {
                                     editor.restart_blink(cx);
                                 }
+                                let colors = editor.default_colors();
+                                if colors != colors_before {
+                                    cx.emit(EditorEvent::Colors(colors));
+                                }
                                 if title_changed {
                                     cx.emit(EditorEvent::Title(editor.ui.title.clone().into()));
                                 }
-                                editor.clear_starting_status();
                                 cx.notify();
                             });
                             if update.is_err() {
@@ -540,7 +538,7 @@ impl Editor {
                         }
                         NvimEvent::Error(error) => {
                             let update = editor.update_in(cx, |editor, _, cx| {
-                                editor.status = Some(Status::Error(error.into()));
+                                editor.error = Some(error.into());
                                 cx.notify();
                             });
                             if update.is_err() {
@@ -563,7 +561,7 @@ impl Editor {
                                 if let Some(error) = error
                                     && !editor.close_requested
                                 {
-                                    editor.status = Some(Status::Error(error.into()));
+                                    editor.error = Some(error.into());
                                     cx.notify();
                                 } else {
                                     cx.emit(EditorEvent::Closed);
@@ -767,12 +765,6 @@ impl Editor {
         }
     }
 
-    fn clear_starting_status(&mut self) {
-        if matches!(self.status, Some(Status::Starting)) {
-            self.status = None;
-        }
-    }
-
     fn set_focus(&mut self, gained: bool) {
         if let Some(session) = &self.session {
             session.client.focus(gained);
@@ -789,9 +781,7 @@ impl Editor {
     }
 
     pub(crate) fn request_close(&mut self) -> bool {
-        if self.allow_close
-            || self.session.is_none() && matches!(self.status, Some(Status::Error(_)))
-        {
+        if self.allow_close || self.session.is_none() && self.error.is_some() {
             return true;
         }
         if self.close_requested {
@@ -1496,7 +1486,7 @@ impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = cx.entity();
         let input = editor.clone();
-        let status = self.status.clone();
+        let error = self.error.clone();
         div()
             .relative()
             .size_full()
@@ -1556,11 +1546,7 @@ impl Render for Editor {
                 )
                 .size_full(),
             )
-            .when_some(status, |view, status| {
-                let (message, dismissible) = match status {
-                    Status::Starting => ("Starting Neovim…".into(), false),
-                    Status::Error(message) => (message, true),
-                };
+            .when_some(error, |view, message| {
                 view.child(
                     div()
                         .absolute()
@@ -1577,26 +1563,24 @@ impl Render for Editor {
                         .gap(px(8.0))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(div().min_w(px(0.0)).flex_1().child(message))
-                        .when(dismissible, |toast| {
-                            toast.child(
-                                div()
-                                    .id("dismiss-status")
-                                    .flex_none()
-                                    .size(px(20.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(5.0))
-                                    .text_size(px(14.0))
-                                    .cursor_pointer()
-                                    .hover(|this| this.bg(color(0xffffff).opacity(0.12)))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.status = None;
-                                        cx.notify();
-                                    }))
-                                    .child("×"),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .id("dismiss-error")
+                                .flex_none()
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.0))
+                                .text_size(px(14.0))
+                                .cursor_pointer()
+                                .hover(|this| this.bg(color(0xffffff).opacity(0.12)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.error = None;
+                                    cx.notify();
+                                }))
+                                .child("×"),
+                        ),
                 )
             })
     }

@@ -23,8 +23,6 @@ const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
 
 #[derive(Clone, Copy)]
 struct Theme {
-    chrome: u32,
-    chrome_opacity: f32,
     panel: u32,
     raised: u32,
     border: u32,
@@ -55,8 +53,6 @@ impl Theme {
     fn for_dark(dark: bool) -> Self {
         if dark {
             Self {
-                chrome: 0x191b1e,
-                chrome_opacity: 0.78,
                 panel: 0x222529,
                 raised: 0x2d3035,
                 border: 0x3a3d42,
@@ -67,8 +63,6 @@ impl Theme {
             }
         } else {
             Self {
-                chrome: 0xf2f1ef,
-                chrome_opacity: 0.82,
                 panel: 0xf8f7f5,
                 raised: 0xffffff,
                 border: 0xdedbd6,
@@ -350,6 +344,12 @@ impl WorkspaceWindow {
                 move |this, _, event, window, cx| match event {
                     EditorEvent::CloseCancelled => this.closing_window = false,
                     EditorEvent::Closed => this.editor_closed(id, window, cx),
+                    EditorEvent::Colors(colors) => {
+                        if this.tabs.get(this.active).is_some_and(|tab| tab.id == id) {
+                            this.last_editor_colors = Some(*colors);
+                            cx.notify();
+                        }
+                    }
                     EditorEvent::Title(title) => {
                         this.editor_title_changed(id, title.clone(), window)
                     }
@@ -504,11 +504,16 @@ impl WorkspaceWindow {
 
     fn save_editor_transparency(&mut self) {
         if let Err(error) = write_editor_transparency(self.editor_transparency) {
-            self.status = Some(format!("Could not save editor transparency: {error}").into());
+            self.status = Some(format!("Could not save background transparency: {error}").into());
         }
     }
 
-    fn render_titlebar(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_titlebar(
+        &self,
+        theme: Theme,
+        frame_opacity: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mut tabs = div()
             .flex()
             .min_w(px(0.0))
@@ -544,11 +549,13 @@ impl WorkspaceWindow {
                     .rounded(px(16.0))
                     .border_1()
                     .border_color(translucent(theme.border, if active { 0.7 } else { 0.0 }))
-                    .when(active, |tab| tab.bg(translucent(theme.raised, 0.62)))
+                    .when(active, |tab| tab.bg(translucent(theme.panel, 0.9)))
+                    .when(!active, |tab| {
+                        tab.hover(move |tab| tab.bg(translucent(theme.raised, 0.72)))
+                    })
                     .text_color(rgb(if active { theme.text } else { theme.muted }))
                     .text_size(px(12.0))
                     .cursor_pointer()
-                    .hover(move |this| this.bg(translucent(theme.raised, 0.72)))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.closing_window = false;
@@ -601,7 +608,7 @@ impl WorkspaceWindow {
             .h(px(46.0))
             .w_full()
             .flex_none()
-            .bg(translucent(theme.chrome, theme.chrome_opacity))
+            .bg(translucent(theme.panel, frame_opacity))
             .flex()
             .items_center()
             .gap(px(7.0))
@@ -859,7 +866,7 @@ impl WorkspaceWindow {
                     .justify_between()
                     .gap(px(20.0))
                     .px(px(14.0))
-                    .child(div().text_size(px(13.0)).child("Editor Transparency"))
+                    .child(div().text_size(px(13.0)).child("Background Transparency"))
                     .child(
                         div()
                             .flex()
@@ -1076,6 +1083,7 @@ impl Render for WorkspaceWindow {
             .editor_colors(cx)
             .map(|colors| Theme::for_editor_colors(colors.0, colors.1))
             .unwrap_or_else(|| Theme::for_appearance(window.appearance()));
+        let frame_opacity = (1.0 - self.editor_transparency - 0.25).max(0.0);
         let content = self.tabs.get(self.active).map(|tab| tab.content.clone());
         div()
             .size_full()
@@ -1101,26 +1109,61 @@ impl Render for WorkspaceWindow {
             .on_action(cx.listener(|this, action: &SelectWorkspace, window, cx| {
                 this.select_workspace(action.index, window, cx);
             }))
-            .child(self.render_titlebar(theme, cx))
+            .child(self.render_titlebar(theme, frame_opacity, cx))
             .child(
-                div().min_h(px(0.0)).flex_1().px(px(6.0)).pb(px(6.0)).child(
-                    div()
-                        .relative()
-                        .size_full()
-                        .overflow_hidden()
-                        .rounded(px(9.0))
-                        .border_1()
-                        .border_color(rgb(theme.border))
-                        .when_some(content, |shell, content| match content {
-                            TabContent::Launcher => shell
-                                .bg(rgb(theme.panel))
-                                .child(self.render_launcher(theme, cx)),
-                            TabContent::Settings => shell
-                                .bg(rgb(theme.panel))
-                                .child(self.render_settings(theme, cx)),
-                            TabContent::Editor(editor) => shell.child(editor),
-                        }),
-                ),
+                div()
+                    .relative()
+                    .min_h(px(0.0))
+                    .flex_1()
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                window.paint_quad(
+                                    fill(bounds, gpui::transparent_black())
+                                        .corner_radii(gpui::Corners {
+                                            top_left: px(0.0),
+                                            top_right: px(0.0),
+                                            bottom_right: px(15.0),
+                                            bottom_left: px(15.0),
+                                        })
+                                        .border_widths(gpui::Edges {
+                                            top: px(0.0),
+                                            right: px(6.0),
+                                            bottom: px(6.0),
+                                            left: px(6.0),
+                                        })
+                                        .border_color(translucent(theme.panel, frame_opacity)),
+                                );
+                            },
+                        )
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .right(px(0.0))
+                        .bottom(px(0.0)),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(6.0))
+                            .top_0()
+                            .right(px(6.0))
+                            .bottom(px(6.0))
+                            .overflow_hidden()
+                            .rounded(px(9.0))
+                            .border_1()
+                            .border_color(rgb(theme.border))
+                            .when_some(content, |shell, content| match content {
+                                TabContent::Launcher => shell
+                                    .bg(rgb(theme.panel))
+                                    .child(self.render_launcher(theme, cx)),
+                                TabContent::Settings => shell
+                                    .bg(rgb(theme.panel))
+                                    .child(self.render_settings(theme, cx)),
+                                TabContent::Editor(editor) => shell.child(editor),
+                            }),
+                    ),
             )
     }
 }
@@ -1225,6 +1268,13 @@ fn promote_recent(recents: &mut Vec<PathBuf>, path: PathBuf, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_theme_uses_neovim_colors() {
+        let theme = Theme::for_editor_colors(0x112233, 0xfafafa);
+        assert_eq!(theme.panel, 0xfafafa);
+        assert_eq!(theme.text, 0x112233);
+    }
 
     #[test]
     fn recent_workspaces_are_unique_newest_first_and_bounded() {
