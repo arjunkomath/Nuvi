@@ -1,0 +1,56 @@
+name: Update Homebrew cask
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-homebrew-cask
+
+jobs:
+  update-cask:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${TAG#v}"
+          asset="Nuvi-${version}-macos-arm64.zip"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir "$RUNNER_TEMP"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/$asset" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: arjunkomath/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update cask
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA256: ${{ steps.release.outputs.sha256 }}
+        run: |
+          sed -i -E "s/^  version \"[^\"]+\"/  version \"$VERSION\"/" homebrew-tap/Casks/nuvi.rb
+          sed -i -E "s/^  sha256 \"[^\"]+\"/  sha256 \"$SHA256\"/" homebrew-tap/Casks/nuvi.rb
+          grep -Fxq "  version \"$VERSION\"" homebrew-tap/Casks/nuvi.rb
+          grep -Fxq "  sha256 \"$SHA256\"" homebrew-tap/Casks/nuvi.rb
+
+      - name: Push update
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git diff --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/nuvi.rb
+          git commit -m "Update Nuvi to $VERSION"
+          git push
