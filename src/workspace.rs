@@ -26,6 +26,8 @@ const PANEL_RADIUS: f32 = 9.0;
 /// (`FRAME_RADIUS - FRAME_WIDTH`) then matches the panel's corners exactly.
 const FRAME_RADIUS: f32 = PANEL_RADIUS + FRAME_WIDTH;
 const DEFAULT_EDITOR_TRANSPARENCY: f32 = 0.0;
+const MAX_EDITOR_TRANSPARENCY: f32 = 0.5;
+const EDITOR_TRANSPARENCY_STEP: f32 = 0.1;
 const REPOSITORY_URL: &str = "https://github.com/arjunkomath/Nuvi";
 const NEW_ISSUE_URL: &str = "https://github.com/arjunkomath/Nuvi/issues/new";
 
@@ -462,7 +464,9 @@ impl WorkspaceWindow {
         bounds: Bounds<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.editor_transparency = ((position - bounds.left()) / bounds.size.width).clamp(0.0, 1.0);
+        let slider_position = ((position - bounds.left()) / bounds.size.width).clamp(0.0, 1.0);
+        self.editor_transparency =
+            snap_editor_transparency(slider_position * MAX_EDITOR_TRANSPARENCY);
         let opacity = 1.0 - self.editor_transparency;
         for tab in &self.tabs {
             if let TabContent::Editor(editor) = &tab.content {
@@ -755,7 +759,7 @@ impl WorkspaceWindow {
 
     fn render_settings(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let editor_transparency = self.editor_transparency;
-        let percentage = (editor_transparency * 100.0).round() as u8;
+        let slider_position = editor_transparency / MAX_EDITOR_TRANSPARENCY;
         let workspace = cx.entity();
         let slider = canvas(
             |_, _, _| (),
@@ -799,10 +803,10 @@ impl WorkspaceWindow {
 
                 let filled = Bounds::new(
                     track.origin,
-                    size(track.size.width * editor_transparency, track.size.height),
+                    size(track.size.width * slider_position, track.size.height),
                 );
                 let thumb_center = point(
-                    track.left() + track.size.width * editor_transparency,
+                    track.left() + track.size.width * slider_position,
                     bounds.center().y,
                 );
                 window.paint_quad(fill(track, rgb(theme.border)).corner_radii(px(2.0)));
@@ -837,21 +841,7 @@ impl WorkspaceWindow {
                     .gap(px(20.0))
                     .px(px(14.0))
                     .child(div().text_size(px(13.0)).child("Background Transparency"))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(12.0))
-                            .child(slider)
-                            .child(
-                                div()
-                                    .w(px(36.0))
-                                    .text_right()
-                                    .text_size(px(12.0))
-                                    .text_color(rgb(theme.muted))
-                                    .child(format!("{percentage}%")),
-                            ),
-                    ),
+                    .child(slider),
             );
 
         let mut shortcuts = div()
@@ -1212,8 +1202,13 @@ fn load_editor_transparency() -> f32 {
         .and_then(|file| std::fs::read_to_string(file).ok())
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite())
-        .map(|value| value.clamp(0.0, 1.0))
+        .map(snap_editor_transparency)
         .unwrap_or(DEFAULT_EDITOR_TRANSPARENCY)
+}
+
+fn snap_editor_transparency(value: f32) -> f32 {
+    (value.clamp(0.0, MAX_EDITOR_TRANSPARENCY) / EDITOR_TRANSPARENCY_STEP).round()
+        * EDITOR_TRANSPARENCY_STEP
 }
 
 fn write_editor_transparency(value: f32) -> std::io::Result<()> {
