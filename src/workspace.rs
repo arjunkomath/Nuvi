@@ -13,6 +13,7 @@ use gpui::{
 use crate::{
     CloseWorkspace, NewWorkspace, OpenFolder, OpenSettings, SelectWorkspace,
     editor::{Editor, EditorEvent},
+    shell,
 };
 
 const MAX_RECENTS: usize = 8;
@@ -107,6 +108,11 @@ pub struct WorkspaceWindow {
     recents: Vec<PathBuf>,
     editor_transparency: f32,
     adjusting_editor_transparency: bool,
+    automatic_shell: PathBuf,
+    available_shells: Vec<PathBuf>,
+    selected_shell: Option<PathBuf>,
+    shell_dropdown_open: bool,
+    shell_restart_required: bool,
     status: Option<SharedString>,
     closing_window: bool,
     confirming_window_close: bool,
@@ -116,6 +122,13 @@ pub struct WorkspaceWindow {
 
 impl WorkspaceWindow {
     pub fn new(window: &mut Window, args: Vec<OsString>, cx: &mut Context<Self>) -> Self {
+        let selected_shell = shell::selected_shell();
+        let mut available_shells = shell::available_shells();
+        if let Some(selected) = &selected_shell
+            && !available_shells.contains(selected)
+        {
+            available_shells.push(selected.clone());
+        }
         let mut this = Self {
             focus: cx.focus_handle(),
             tabs: Vec::new(),
@@ -124,6 +137,11 @@ impl WorkspaceWindow {
             recents: load_recents(),
             editor_transparency: load_editor_transparency(),
             adjusting_editor_transparency: false,
+            automatic_shell: shell::automatic_shell(),
+            available_shells,
+            selected_shell,
+            shell_dropdown_open: false,
+            shell_restart_required: false,
             status: None,
             closing_window: false,
             confirming_window_close: false,
@@ -482,6 +500,24 @@ impl WorkspaceWindow {
         }
     }
 
+    fn select_shell(&mut self, selected: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.shell_dropdown_open = false;
+        if self.selected_shell == selected {
+            cx.notify();
+            return;
+        }
+        match shell::save_selected_shell(selected.as_deref()) {
+            Ok(()) => {
+                self.selected_shell = selected;
+                self.shell_restart_required = true;
+            }
+            Err(error) => {
+                self.status = Some(format!("Could not save shell selection: {error}").into());
+            }
+        }
+        cx.notify();
+    }
+
     fn render_titlebar(
         &self,
         theme: Theme,
@@ -698,50 +734,56 @@ impl WorkspaceWindow {
         div()
             .relative()
             .size_full()
-            .flex()
-            .justify_center()
             .text_color(rgb(theme.text))
             .child(
                 div()
-                    .w(px(CONTENT_WIDTH))
-                    .max_w_full()
-                    .px(px(22.0))
-                    .pt(px(54.0))
+                    .id("launcher-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .flex()
+                    .items_start()
+                    .justify_center()
                     .child(
                         div()
-                            .text_size(px(22.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .line_height(px(28.0))
-                            .child("Open a workspace"),
-                    )
-                    .child(
-                        div().mt(px(8.0)).flex().child(
-                            div()
-                                .id("open-folder")
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(rgb(theme.accent))
-                                .cursor_pointer()
-                                .hover(|this| this.underline())
-                                .active(|this| this.opacity(0.82))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.choose_folder(window, cx)
-                                    }),
+                            .w(px(CONTENT_WIDTH))
+                            .max_w_full()
+                            .px(px(22.0))
+                            .pt(px(54.0))
+                            .pb(px(52.0))
+                            .child(
+                                div()
+                                    .text_size(px(22.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .line_height(px(28.0))
+                                    .child("Open a workspace"),
+                            )
+                            .child(
+                                div().mt(px(8.0)).flex().child(
+                                    div()
+                                        .id("open-folder")
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(rgb(theme.accent))
+                                        .cursor_pointer()
+                                        .hover(|this| this.underline())
+                                        .active(|this| this.opacity(0.82))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.choose_folder(window, cx)
+                                        }))
+                                        .child("Choose a folder…"),
+                                ),
+                            )
+                            .child(recents)
+                            .when_some(self.status.clone(), |view, status| {
+                                view.child(
+                                    div()
+                                        .mt(px(18.0))
+                                        .text_size(px(12.0))
+                                        .text_color(rgb(theme.error))
+                                        .child(status),
                                 )
-                                .child("Choose a folder…"),
-                        ),
-                    )
-                    .child(recents)
-                    .when_some(self.status.clone(), |view, status| {
-                        view.child(
-                            div()
-                                .mt(px(18.0))
-                                .text_size(px(12.0))
-                                .text_color(rgb(theme.error))
-                                .child(status),
-                        )
-                    }),
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -843,6 +885,146 @@ impl WorkspaceWindow {
                     .child(div().text_size(px(13.0)).child("Background Transparency"))
                     .child(slider),
             );
+
+        let automatic_selected = self.selected_shell.is_none();
+        let selected_shell_label = self
+            .selected_shell
+            .as_deref()
+            .map(display_shell_name)
+            .unwrap_or_else(|| {
+                format!("Automatic ({})", display_shell_name(&self.automatic_shell))
+            });
+        let mut shell_options = div()
+            .border_t_1()
+            .border_color(rgb(theme.border))
+            .bg(translucent(theme.raised, 0.25));
+        shell_options = shell_options.child(
+            div()
+                .id("settings-shell-automatic")
+                .h(px(40.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .px(px(14.0))
+                .cursor_pointer()
+                .when(automatic_selected, |option| {
+                    option.bg(translucent(theme.accent, 0.12))
+                })
+                .hover(|option| option.bg(translucent(theme.border, 0.25)))
+                .on_click(cx.listener(|this, _, _, cx| this.select_shell(None, cx)))
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .flex()
+                        .flex_1()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(div().text_size(px(12.0)).child("Automatic"))
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .text_size(px(11.0))
+                                .text_color(rgb(theme.muted))
+                                .child(self.automatic_shell.display().to_string()),
+                        ),
+                )
+                .child(if automatic_selected { "✓" } else { "" }),
+        );
+        for (index, path) in self.available_shells.iter().enumerate() {
+            let selected = self.selected_shell.as_ref() == Some(path);
+            let option = path.clone();
+            shell_options = shell_options.child(
+                div()
+                    .id(("settings-shell", index))
+                    .h(px(40.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .px(px(14.0))
+                    .border_t_1()
+                    .border_color(rgb(theme.border))
+                    .cursor_pointer()
+                    .when(selected, |option| {
+                        option.bg(translucent(theme.accent, 0.12))
+                    })
+                    .hover(|option| option.bg(translucent(theme.border, 0.25)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.select_shell(Some(option.clone()), cx)
+                    }))
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_1()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(div().text_size(px(12.0)).child(display_shell_name(path)))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(theme.muted))
+                                    .child(path.display().to_string()),
+                            ),
+                    )
+                    .child(if selected { "✓" } else { "" }),
+            );
+        }
+        let environment = div()
+            .mt(px(8.0))
+            .overflow_hidden()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(rgb(theme.border))
+            .bg(translucent(theme.raised, 0.45))
+            .child(
+                div()
+                    .h(px(58.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(20.0))
+                    .px(px(14.0))
+                    .child(div().text_size(px(13.0)).child("Shell"))
+                    .child(
+                        div()
+                            .id("settings-shell-picker")
+                            .w(px(220.0))
+                            .h(px(32.0))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .px(px(10.0))
+                            .rounded(px(7.0))
+                            .border_1()
+                            .border_color(rgb(theme.border))
+                            .bg(translucent(theme.raised, 0.55))
+                            .cursor_pointer()
+                            .hover(|picker| picker.bg(translucent(theme.border, 0.2)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.shell_dropdown_open = !this.shell_dropdown_open;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(12.0))
+                                    .child(selected_shell_label),
+                            )
+                            .child(if self.shell_dropdown_open {
+                                "▴"
+                            } else {
+                                "▾"
+                            }),
+                    ),
+            )
+            .when(self.shell_dropdown_open, |card| card.child(shell_options));
 
         let mut shortcuts = div()
             .mt(px(8.0))
@@ -950,6 +1132,7 @@ impl WorkspaceWindow {
             .size_full()
             .overflow_y_scroll()
             .flex()
+            .items_start()
             .justify_center()
             .text_color(rgb(theme.text))
             .child(
@@ -974,6 +1157,24 @@ impl WorkspaceWindow {
                             .child("Appearance"),
                     )
                     .child(appearance)
+                    .child(
+                        div()
+                            .mt(px(28.0))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(theme.muted))
+                            .child("Environment"),
+                    )
+                    .child(environment)
+                    .when(self.shell_restart_required, |view| {
+                        view.child(
+                            div()
+                                .mt(px(10.0))
+                                .text_size(px(12.0))
+                                .text_color(rgb(theme.muted))
+                                .child("Restart Nuvi to apply the new shell."),
+                        )
+                    })
                     .when_some(self.status.clone(), |view, status| {
                         view.child(
                             div()
@@ -1161,6 +1362,14 @@ fn workspace_name(path: &Path) -> &str {
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("Workspace")
+}
+
+fn display_shell_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Shell")
+        .to_string()
 }
 
 fn translucent(value: u32, opacity: f32) -> Hsla {

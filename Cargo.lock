@@ -3009,6 +3009,7 @@ dependencies = [
  "async-trait",
  "compact_str",
  "gpui",
+ "libc",
  "nvim-rs",
  "objc",
 ]

@@ -1,6 +1,7 @@
 mod editor;
 mod grid;
 mod nvim;
+mod shell;
 mod workspace;
 
 use gpui::{
@@ -22,6 +23,14 @@ pub struct SelectWorkspace {
 }
 
 fn main() {
+    match shell::startup_path() {
+        Ok(Some(path)) => {
+            // SAFETY: this runs before GPUI or any other thread is started.
+            unsafe { std::env::set_var("PATH", path) };
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("Could not load the login shell PATH: {error}"),
+    }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     Application::new().run(move |cx: &mut App| {
         cx.bind_keys([
