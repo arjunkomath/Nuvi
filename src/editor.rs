@@ -96,7 +96,7 @@ struct ParsedFont {
 #[derive(Default)]
 struct PaintLayer {
     backgrounds: Vec<PaintQuad>,
-    paths: Vec<(Path<Pixels>, Hsla)>,
+    paths: Vec<MaskedPath>,
     glyphs: Vec<(Point<Pixels>, ShapedLine)>,
 }
 
@@ -158,6 +158,7 @@ enum PowerlineSeparator {
     HardLeft,
     SoftLeft,
     AngledUpper,
+    AngledUpperRight,
     AngledThin,
     AngledLower,
 }
@@ -272,7 +273,11 @@ impl GridPainter<'_> {
                     if highlights[col].dim {
                         foreground = foreground.opacity(0.5);
                     }
-                    layer.paths.push((path, foreground));
+                    layer.paths.push(MaskedPath {
+                        path,
+                        color: foreground,
+                        mask: Some(ContentMask { bounds }),
+                    });
                 }
                 col += 1;
                 continue;
@@ -1509,8 +1514,10 @@ impl Render for Editor {
                         for quad in paint.main.backgrounds {
                             window.paint_quad(quad);
                         }
-                        for (path, color) in paint.main.paths {
-                            window.paint_path(path, color);
+                        for path in paint.main.paths {
+                            window.with_content_mask(path.mask, |window| {
+                                window.paint_path(path.path, path.color);
+                            });
                         }
                         for (origin, line) in paint.main.glyphs {
                             let _ = line.paint(origin, line_height, window, cx);
@@ -1520,8 +1527,10 @@ impl Render for Editor {
                                 for quad in scroll.layer.backgrounds {
                                     window.paint_quad(quad);
                                 }
-                                for (path, color) in scroll.layer.paths {
-                                    window.paint_path(path, color);
+                                for path in scroll.layer.paths {
+                                    window.with_content_mask(path.mask, |window| {
+                                        window.paint_path(path.path, path.color);
+                                    });
                                 }
                                 for (origin, line) in scroll.layer.glyphs {
                                     let _ = line.paint(origin, line_height, window, cx);
@@ -1723,6 +1732,7 @@ fn powerline_separator(text: &str) -> Option<PowerlineSeparator> {
         "\u{e0ba}" => Some(PowerlineSeparator::AngledLower),
         "\u{e0bb}" | "\u{e0bd}" => Some(PowerlineSeparator::AngledThin),
         "\u{e0bc}" => Some(PowerlineSeparator::AngledUpper),
+        "\u{e0be}" => Some(PowerlineSeparator::AngledUpperRight),
         _ => None,
     }
 }
@@ -1772,6 +1782,12 @@ fn powerline_path(separator: PowerlineSeparator, bounds: Bounds<Pixels>) -> Opti
             path.move_to(point(left - overlap, top));
             path.line_to(point(right, top));
             path.line_to(point(left - overlap, bottom));
+            path.close();
+        }
+        PowerlineSeparator::AngledUpperRight => {
+            path.move_to(point(right + overlap, top));
+            path.line_to(point(right + overlap, bottom));
+            path.line_to(point(left, top));
             path.close();
         }
         PowerlineSeparator::AngledThin => {
@@ -1993,6 +2009,10 @@ mod tests {
         assert_eq!(
             powerline_separator("\u{e0bd}"),
             Some(PowerlineSeparator::AngledThin)
+        );
+        assert_eq!(
+            powerline_separator("\u{e0be}"),
+            Some(PowerlineSeparator::AngledUpperRight)
         );
         assert_eq!(powerline_separator("x"), None);
     }
