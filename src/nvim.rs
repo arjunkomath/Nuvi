@@ -20,6 +20,7 @@ pub enum NvimEvent {
 
 enum Request {
     Input(String),
+    Paste(String),
     Resize(usize, usize),
     Focus(bool),
     Mouse {
@@ -41,6 +42,10 @@ pub struct NvimClient {
 impl NvimClient {
     pub fn input(&self, keys: String) {
         self.request(Request::Input(keys));
+    }
+
+    pub fn paste(&self, text: String) {
+        self.request(Request::Paste(text));
     }
 
     pub fn resize(&self, width: usize, height: usize) {
@@ -205,6 +210,10 @@ impl NvimSession {
             while let Ok(request) = request_queue.recv().await {
                 let (operation, result) = match request {
                     Request::Input(keys) => ("input", request_nvim.input(&keys).await.map(|_| ())),
+                    Request::Paste(text) => (
+                        "paste",
+                        request_nvim.paste(&text, true, -1).await.map(|_| ()),
+                    ),
                     Request::Resize(width, height) => (
                         "resize",
                         request_nvim
@@ -357,6 +366,26 @@ mod tests {
         .await
         .expect("Neovim did not redraw");
 
+        let expected = Value::Array(vec!["first".into(), "second <tag>".into()]);
+        session.client.paste("first\nsecond <tag>".into());
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if session.client.nvim.eval("getline(1, '$')").await.ok() == Some(expected.clone())
+                {
+                    break;
+                }
+                async_std::task::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Neovim did not receive pasted text");
+
+        session
+            .client
+            .nvim
+            .command("set nomodified")
+            .await
+            .expect("Neovim did not reset the test buffer");
         session.client.confirm_quit();
         timeout(Duration::from_secs(5), async {
             while !matches!(receiver.recv().await, Ok(NvimEvent::Exited(None))) {}
