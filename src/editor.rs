@@ -27,7 +27,6 @@ const DEFAULT_FONT_SIZE: f32 = 15.0;
 const CURSOR_ANIMATION_LENGTH: f32 = 0.150;
 const CURSOR_SHORT_ANIMATION_LENGTH: f32 = 0.040;
 const SCROLL_ANIMATION_LENGTH: f32 = 0.300;
-const MAX_SCROLL_ROWS: usize = 8;
 const EDITOR_CORNER_RADIUS: f32 = 8.0;
 const CURSOR_CORNERS: [(f32, f32); 4] = [(-0.5, -0.5), (-0.5, 0.5), (0.5, 0.5), (0.5, -0.5)];
 
@@ -649,10 +648,7 @@ impl Editor {
 
     fn absorb_scroll(&mut self, scroll: ScrollRecord) -> bool {
         let distance = scroll.rows.unsigned_abs() as usize;
-        if distance == 0
-            || distance > MAX_SCROLL_ROWS
-            || distance >= scroll.bottom.saturating_sub(scroll.top)
-        {
+        if !can_animate_scroll_rows(distance, scroll.bottom.saturating_sub(scroll.top)) {
             self.scroll_animation = None;
             return false;
         }
@@ -804,6 +800,18 @@ impl Editor {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if is_paste(&event.keystroke) {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                && let Some(client) = self.client()
+            {
+                client.paste(text);
+            }
+            self.restart_blink(cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+
         if let Some(keys) = encode_key(&event.keystroke) {
             if let Some(client) = self.client() {
                 client.input(keys);
@@ -1396,7 +1404,10 @@ impl ScrollAnimation {
             && self.left == scroll.left
             && self.right == scroll.right
             && self.direction == scroll.rows.signum() as i8
-            && self.trailing.len() + scroll.evicted.len() <= MAX_SCROLL_ROWS
+            && can_animate_scroll_rows(
+                self.trailing.len() + scroll.evicted.len(),
+                self.bottom.saturating_sub(self.top),
+            )
     }
 
     fn absorb(&mut self, mut scroll: ScrollRecord) {
@@ -1878,6 +1889,10 @@ fn grid_line_height(ascent: Pixels, descent: Pixels, linespace: i64) -> Pixels {
     (ascent + descent.abs() + px(linespace as f32)).max(px(1.0))
 }
 
+fn can_animate_scroll_rows(rows: usize, region_height: usize) -> bool {
+    rows > 0 && rows < region_height
+}
+
 fn installed_font_families(configured: Vec<String>, installed: &[String]) -> Vec<String> {
     let mut available = configured
         .into_iter()
@@ -1917,6 +1932,10 @@ fn modifiers(modifiers: Modifiers) -> String {
         result.push('D');
     }
     result
+}
+
+fn is_paste(key: &Keystroke) -> bool {
+    key.key == "v" && key.modifiers.platform && !key.modifiers.control && !key.modifiers.alt
 }
 
 fn encode_key(key: &Keystroke) -> Option<String> {
@@ -2070,6 +2089,12 @@ mod tests {
     }
 
     #[test]
+    fn half_page_scrolls_fit_the_animation_buffer() {
+        assert!(can_animate_scroll_rows(12, 24));
+        assert!(!can_animate_scroll_rows(24, 24));
+    }
+
+    #[test]
     fn long_cursor_jump_lands_the_leading_edge_first() {
         let mut animation = CursorAnimation::default();
         animation.snap((0.5, 0.5), CursorShape::Block, 100);
@@ -2133,6 +2158,14 @@ mod tests {
             key_char: Some("\n".into()),
             modifiers: Modifiers::none(),
         };
+        let paste = Keystroke {
+            key: "v".into(),
+            key_char: Some("v".into()),
+            modifiers: Modifiers {
+                platform: true,
+                ..Modifiers::none()
+            },
+        };
 
         assert_eq!(encode_key(&plain), None);
         assert_eq!(
@@ -2145,5 +2178,6 @@ mod tests {
         );
         assert_eq!(encode_key(&option).as_deref(), Some("<M-s>"));
         assert_eq!(encode_key(&enter).as_deref(), Some("<CR>"));
+        assert!(is_paste(&paste));
     }
 }
